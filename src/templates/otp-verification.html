@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Verification</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f6f9fc; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); overflow: hidden; margin-top: 40px; margin-bottom: 40px; }
+        .header { background-color: #4f46e5; padding: 30px; text-align: center; }
+        .header h1 { color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; }
+        .content { padding: 40px 30px; color: #334155; text-align: center; }
+        .greeting { font-size: 18px; margin-bottom: 20px; color: #1e293b; font-weight: 500; }
+        .message { font-size: 16px; line-height: 1.6; color: #475569; margin-bottom: 30px; }
+        .otp-container { background-color: #f1f5f9; padding: 20px; border-radius: 12px; display: inline-block; margin-bottom: 30px; letter-spacing: 5px; }
+        .otp-code { font-size: 32px; font-weight: 700; color: #4f46e5; font-family: 'Courier New', Courier, monospace; }
+        .expiry { font-size: 14px; color: #64748b; margin-top: 10px; }
+        .warning { background-color: #fff1f2; border: 1px solid #ffe4e6; padding: 15px; border-radius: 6px; font-size: 14px; color: #be123c; margin-top: 20px; text-align: left; }
+        .footer { background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; }
+        @media only screen and (max-width: 600px) {
+            .container { width: 100%; margin: 0; border-radius: 0; box-shadow: none; }
+            .content { padding: 30px 20px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Email Verification</h1>
+        </div>
+        <div class="content">
+            <p className="greeting">Hello there,</p>
+            <p className="message">
+                To complete your secure login, please verify your email address. Use the One-Time Password (OTP) below.
+            </p>
+            
+            <div className="otp-container">
+                <span className="otp-code">{{OTP_CODE}}</span>
+            </div>
+            
+            <p className="expiry">This code is valid for <strong>15 minutes</strong>.</p>
+
+            <div className="warning">
+                <strong>Security Notice:</strong> Never share this code with anyone. Our support team will never ask for your verification code.
+            </div>
+        </div>
+        <div className="footer">
+            <p>&copy; {{YEAR}} T-Shirt App. All rights reserved.</p>
+            <p>If you didn't request this email, you can safely ignore it.</p>
+        </div>
+    </div>
+</body>
+</html>
