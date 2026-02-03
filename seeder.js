@@ -9,7 +9,22 @@ const connectDB = require('./src/config/db');
 
 dotenv.config();
 
-connectDB();
+const runSeeder = async () => {
+    try {
+        await connectDB();
+
+        if (process.argv[2] === '-d') {
+            await destroyData();
+        } else {
+            await importData();
+        }
+    } catch (err) {
+        console.error(err);
+        process.exit(1);
+    }
+};
+
+runSeeder();
 
 const importData = async () => {
     try {
@@ -43,7 +58,13 @@ const importData = async () => {
             }
         ];
 
-        const createdUsers = await User.insertMany(users);
+        // Use create() or save() individually to trigger pre-save hooks (hashing)
+        const createdUsers = [];
+        for (const user of users) {
+            const createdUser = await User.create(user);
+            createdUsers.push(createdUser);
+        }
+
         const adminUser = createdUsers[0];
         const sellerUser = createdUsers[1];
 
@@ -122,8 +143,4 @@ const destroyData = async () => {
     }
 };
 
-if (process.argv[2] === '-d') {
-    destroyData();
-} else {
-    importData();
-}
+

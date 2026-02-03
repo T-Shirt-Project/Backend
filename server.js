@@ -9,19 +9,27 @@ const orderRoutes = require('./src/routes/orderRoutes');
 const uploadRoutes = require('./src/routes/uploadRoutes');
 const cartRoutes = require('./src/routes/cartRoutes');
 const activityRoutes = require('./src/routes/activityRoutes');
-const passport = require('passport');
-const passportConfig = require('./src/config/passportConfig');
-
 dotenv.config();
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
-app.use(passport.initialize());
+// 1. FIX CORS: Allow requests from your frontend
+app.use(cors({
+    origin: '*', // WARN: For production, replace '*' with your actual Frontend URL
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// Initialize Passport Strategy
-passportConfig();
+app.use(express.json());
+
+// Global request logger
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
+// Passport Strategy removed
+
 
 // API Routes
 app.use('/api/auth', require('./src/routes/authRoutes'));
@@ -55,8 +63,10 @@ const startServer = async () => {
         await connectDB();
 
         // Only start server after DB is connected
-        app.listen(PORT, () => {
+        // 2. FIX BINDING: Explicitly bind to 0.0.0.0 to listen on public IP
+        app.listen(PORT, '0.0.0.0', () => {
             console.log(`✅ Server running on port ${PORT}`);
+            console.log(`🌐 Public Access: http://13.235.83.120:${PORT}/api`);
             console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
         });
     } catch (error) {
