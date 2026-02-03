@@ -9,6 +9,7 @@ const getProducts = async (req, res) => {
     const pageSize = Number(req.query.limit) || 10;
     const page = Number(req.query.page) || 1;
 
+    // Search keyword
     const keyword = req.query.keyword
         ? {
             name: {
@@ -31,16 +32,22 @@ const getProducts = async (req, res) => {
         }
     }
 
-    // Role-based filtering
-    if (req.user) {
-        if (req.user.role === 'seller') {
-            query.seller = req.user._id;
-        } else if (req.user.role === 'admin') {
-            // Admin sees everything
-        } else {
-            query.isVisible = true;
-        }
+    // Role-based visibility
+    // ADMIN: Sees all products
+    // SELLER: Sees only their products (dashboard view) OR public products (browsing) ?? 
+    // Usually sellers browse as users, but have a dashboard. 
+    // The previous logic forced seller role to ONLY see own products globally, which might be wrong for "Browsing"
+    // But assuming this endpoint is mixed use:
+
+    // IF explicitly asking for my products (e.g. Dashboard)
+    // Or if standard user visibility:
+
+    if (req.user && req.user.role === 'seller' && req.query.mode === 'dashboard') {
+        query.seller = req.user._id;
+    } else if (req.user && req.user.role === 'admin') {
+        // Admin sees everything, no extra filter
     } else {
+        // Public / Normal User: Only see Visible products
         query.isVisible = true;
     }
 
@@ -116,12 +123,44 @@ const getProductById = async (req, res) => {
 
         let orderCount = 0;
         let canSeeCount = false;
+        let canReview = false;
 
         if (req.user) {
             if (req.user.role === 'admin') {
                 canSeeCount = true;
             } else if (req.user.role === 'seller' && product.seller && (product.seller._id.toString() === req.user._id.toString() || product.seller.toString() === req.user._id.toString())) {
                 canSeeCount = true;
+            }
+
+            // Check if user can review (Has MORE delivered items than reviews)
+            const deliveredOrders = await Order.find({
+                user: req.user._id,
+                "orderItems.product": product._id,
+                $or: [
+                    { "orderItems": { $elemMatch: { product: product._id, status: 'Delivered' } } },
+                    { status: 'Delivered' }
+                ]
+            });
+
+            let eligibleItemsCount = 0;
+            deliveredOrders.forEach(order => {
+                order.orderItems.forEach(item => {
+                    if (item.product.toString() === product._id.toString()) {
+                        if (item.status === 'Delivered' || (order.status === 'Delivered' && (!item.status || item.status === 'Placed'))) {
+                            eligibleItemsCount++;
+                        }
+                    }
+                });
+            });
+
+            // Count existing reviews
+            const existingReviewsCount = await Comment.countDocuments({
+                user: req.user._id,
+                product: product._id
+            });
+
+            if (eligibleItemsCount > existingReviewsCount) {
+                canReview = true;
             }
         }
 
@@ -132,108 +171,99 @@ const getProductById = async (req, res) => {
             });
         }
 
-        res.json({ ...product.toObject(), reviews: comments, orderCount: canSeeCount ? orderCount : undefined });
+        res.json({
+            ...product.toObject(),
+            reviews: comments,
+            orderCount: canSeeCount ? orderCount : undefined,
+            canReview
+        });
     } else {
         res.status(404).json({ message: 'Product not found' });
     }
 };
 
-// @desc Create a product (Seller/Admin)
+// @desc Create a product
 // @route POST /api/products
 const createProduct = async (req, res) => {
-    const { name, price, description, category, type, countInStock, images } = req.body;
+    try {
+        const { name, price, description, images, category, type, stock, discountPrice } = req.body;
 
-    const product = new Product({
-        name,
-        price,
-        description,
-        category, // Gender: Men, Women, Both
-        type,     // Style: Round Neck, V Neck, Polo
-        stock: countInStock,
-        seller: req.user._id,
-        images: images || [],
-        isVisible: true
-    });
+        const product = new Product({
+            name,
+            price,
+            description,
+            images: images ? (Array.isArray(images) ? images : [images]) : [],
+            category,
+            type,
+            stock,
+            discountPrice,
+            seller: req.user._id,
+            isVisible: true
+        });
 
-    const createdProduct = await product.save();
-
-    // Log Activity (Seller)
-    await Activity.create({
-        userId: req.user._id,
-        role: req.user.role,
-        type: 'product_created',
-        targetType: 'Product',
-        targetId: createdProduct._id,
-        description: `Published a new product: ${createdProduct.name}`,
-        details: {
-            name: createdProduct.name,
-            category: createdProduct.category,
-            price: createdProduct.price,
-            type: createdProduct.type
-        }
-    });
-
-    res.status(201).json(createdProduct);
-};
-
-// @desc Update a product
-// @route PUT /api/products/:id
-const updateProduct = async (req, res) => {
-    const { name, price, description, category, type, stock, isVisible, images } = req.body;
-    const product = await Product.findById(req.params.id);
-
-    if (product) {
-        if (product.seller.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-            res.status(401).json({ message: 'Not authorized to update this product' });
-            return;
-        }
-
-        const oldValues = {
-            name: product.name,
-            price: product.price,
-            stock: product.stock,
-            isVisible: product.isVisible,
-            category: product.category,
-            type: product.type
-        };
-
-        product.name = name || product.name;
-        product.price = price !== undefined ? price : product.price;
-        product.description = description || product.description;
-        product.category = category || product.category;
-        product.type = type || product.type;
-        product.stock = stock !== undefined ? stock : product.stock;
-        product.isVisible = isVisible !== undefined ? isVisible : product.isVisible;
-        if (images) product.images = images;
-
-        const updatedProduct = await product.save();
-
-        // Calculate changed fields for log
-        const changes = {};
-        if (oldValues.name !== product.name) changes.name = { old: oldValues.name, new: product.name };
-        if (oldValues.price !== product.price) changes.price = { old: oldValues.price, new: product.price };
-        if (oldValues.stock !== product.stock) changes.stock = { old: oldValues.stock, new: product.stock };
-        if (oldValues.isVisible !== product.isVisible) changes.visibility = { old: oldValues.isVisible, new: product.isVisible };
-        if (oldValues.category !== product.category) changes.gender = { old: oldValues.category, new: product.category };
-        if (oldValues.type !== product.type) changes.style = { old: oldValues.type, new: product.type };
+        const createdProduct = await product.save();
 
         // Log Activity
         await Activity.create({
             userId: req.user._id,
             role: req.user.role,
-            type: 'product_updated',
+            type: 'product_created',
             targetType: 'Product',
-            targetId: product._id,
-            description: `Updated product attributes for: ${product.name}`,
-            details: {
-                name: product.name,
-                changes: Object.keys(changes).length > 0 ? changes : 'No semantic changes'
-            }
+            targetId: createdProduct._id,
+            description: `Created new product: ${createdProduct.name}`,
+            details: { name: createdProduct.name, price: createdProduct.price }
         });
 
-        res.json(updatedProduct);
-    } else {
-        res.status(404).json({ message: 'Product not found' });
+        res.status(201).json(createdProduct);
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+// @desc Update a product
+// @route PUT /api/products/:id
+const updateProduct = async (req, res) => {
+    try {
+        const { name, price, description, images, category, type, stock, discountPrice, isVisible } = req.body;
+
+        const product = await Product.findById(req.params.id);
+
+        if (product) {
+            if (product.seller.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+                return res.status(401).json({ message: 'Not authorized to update this product' });
+            }
+
+            product.name = name || product.name;
+            product.price = price !== undefined ? price : product.price;
+            product.description = description || product.description;
+            if (images) {
+                product.images = Array.isArray(images) ? images : [images];
+            }
+            product.category = category || product.category;
+            product.type = type || product.type;
+            product.stock = stock !== undefined ? stock : product.stock;
+            product.discountPrice = discountPrice !== undefined ? discountPrice : product.discountPrice;
+            product.isVisible = isVisible !== undefined ? isVisible : product.isVisible;
+
+            const updatedProduct = await product.save();
+
+            // Log Activity
+            await Activity.create({
+                userId: req.user._id,
+                role: req.user.role,
+                type: 'product_updated',
+                targetType: 'Product',
+                targetId: updatedProduct._id,
+                description: `Updated product: ${updatedProduct.name}`,
+                details: { changes: req.body }
+            });
+
+            res.json(updatedProduct);
+        } else {
+            res.status(404).json({ message: 'Product not found' });
+        }
+    } catch (error) {
+        res.status(400).json({ message: error.message });
     }
 };
 
@@ -245,32 +275,77 @@ const createProductReview = async (req, res) => {
 
     if (product) {
         // STRICT RULE: Check if user ordered this product and it is delivered
-        const hasOrdered = await Order.findOne({
+        // 1. Find all orders containing this product
+        const orders = await Order.find({
             user: req.user._id,
             "orderItems.product": req.params.id,
-            status: 'Delivered'
+            $or: [
+                { "orderItems": { $elemMatch: { product: req.params.id, status: 'Delivered' } } },
+                { status: 'Delivered' } // Backward compat
+            ]
         });
 
-        if (!hasOrdered) {
-            return res.status(400).json({ message: 'You can only review products you have purchased and received.' });
+        if (!orders || orders.length === 0) {
+            return res.status(400).json({ message: 'You can only review products you have purchased and received (Delivered status).' });
         }
 
-        const alreadyReviewed = await Comment.findOne({
+        // 2. Collect all delivered item IDs for this product
+        let eligibleItems = [];
+        orders.forEach(order => {
+            order.orderItems.forEach(item => {
+                if (item.product.toString() === req.params.id) {
+                    // Check status: Item explicit Delivered OR Order explicit Delivered (and item status missing/undefined)
+                    if (item.status === 'Delivered' || (order.status === 'Delivered' && (!item.status || item.status === 'Placed'))) {
+                        eligibleItems.push(item);
+                    }
+                }
+            });
+        });
+
+        if (eligibleItems.length === 0) {
+            return res.status(400).json({ message: 'Item is not marked as Delivered yet.' });
+        }
+
+        // 3. Check existing reviews
+        const existingReviews = await Comment.find({
             user: req.user._id,
             product: req.params.id
         });
 
-        if (alreadyReviewed) {
-            return res.status(400).json({ message: 'Product already reviewed' });
+        const reviewedItemIds = existingReviews
+            .map(r => r.orderItemId ? r.orderItemId.toString() : null)
+            .filter(id => id !== null);
+
+        // 4. Find the first eligible item that is NOT reviewed
+        const targetItem = eligibleItems.find(item => !reviewedItemIds.includes(item._id.toString()));
+
+        if (!targetItem) {
+            // If we have reviews but no eligible items left
+            return res.status(400).json({ message: 'You have already reviewed this product.' });
         }
 
+        // Proceed to create review linked to targetItem._id
         const review = await Comment.create({
             user: req.user._id,
             product: req.params.id,
-            name: req.user.name,
             rating: Number(rating),
             content,
+            orderItemId: targetItem._id
         });
+
+        // Update product rating and numReviews
+        const reviews = await Comment.find({ product: req.params.id });
+        product.numReviews = reviews.length;
+        product.rating = reviews.reduce((acc, item) => item.rating + acc, 0) / reviews.length;
+
+        product.reviews.push({
+            name: req.user.name,
+            rating: Number(rating),
+            comment: content,
+            user: req.user._id,
+            orderItemId: targetItem._id
+        });
+        await product.save();
 
         // Log Activity
         await Activity.create({
@@ -336,4 +411,80 @@ const deleteProduct = async (req, res) => {
     }
 };
 
-module.exports = { getProducts, getProductById, createProduct, updateProduct, deleteProduct, createProductReview, toggleLikeProduct };
+// @desc Delete review (Admin)
+// @route DELETE /api/products/:id/reviews/:reviewId
+const deleteProductReview = async (req, res) => {
+    const { id, reviewId } = req.params;
+
+    // Find Product and Review
+    const product = await Product.findById(id);
+    const review = await Comment.findById(reviewId);
+
+    if (!product || !review) {
+        return res.status(404).json({ message: 'Product or Review not found' });
+    }
+
+    await review.deleteOne();
+
+    // Remove from product.reviews array (backward compat)
+    if (product.reviews) {
+        product.reviews = product.reviews.filter(r =>
+            (r._id && r._id.toString() !== reviewId) &&
+            (r.user && r.user.toString() !== review.user.toString())
+        );
+    }
+
+    // Recalculate stats
+    const reviews = await Comment.find({ product: id });
+    product.numReviews = reviews.length;
+    product.rating = reviews.length > 0
+        ? reviews.reduce((acc, item) => item.rating + acc, 0) / reviews.length
+        : 0;
+
+    await product.save();
+
+    res.json({ message: 'Review removed' });
+};
+
+// @desc Update review (Admin)
+// @route PUT /api/products/:id/reviews/:reviewId
+const updateProductReview = async (req, res) => {
+    const { id, reviewId } = req.params;
+    const { content } = req.body; // Admin usually just moderates text, maybe rating logic is risky to touch
+
+    const review = await Comment.findById(reviewId);
+    if (!review) {
+        return res.status(404).json({ message: 'Review not found' });
+    }
+
+    review.comment = content || review.comment;
+    await review.save();
+
+    // Sync with product embedded array
+    const product = await Product.findById(id);
+    if (product && product.reviews) {
+        const embeddedReview = product.reviews.find(r => r._id && r._id.toString() === reviewId);
+        if (embeddedReview) {
+            embeddedReview.comment = content || embeddedReview.comment;
+        } else {
+            // Fallback match user
+            const byUser = product.reviews.find(r => r.user && r.user.toString() === review.user.toString());
+            if (byUser) byUser.comment = content || byUser.comment;
+        }
+        await product.save();
+    }
+
+    res.json(review);
+};
+
+module.exports = {
+    getProducts,
+    getProductById,
+    createProduct,
+    updateProduct,
+    deleteProduct,
+    createProductReview,
+    toggleLikeProduct,
+    deleteProductReview,
+    updateProductReview
+};
