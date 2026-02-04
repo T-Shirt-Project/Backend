@@ -2,6 +2,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Comment = require('../models/Comment');
 const Activity = require('../models/Activity');
+const { broadcastPromotion } = require('../utils/notificationService');
 
 // @desc Fetch all products
 // @route GET /api/products
@@ -212,7 +213,17 @@ const createProduct = async (req, res) => {
             targetId: createdProduct._id,
             description: `Created new product: ${createdProduct.name}`,
             details: { name: createdProduct.name, price: createdProduct.price }
+
         });
+
+        // NOTIFICATION TRIGGER: New Product
+        if (createdProduct.isVisible) {
+            broadcastPromotion(
+                'New Arrival 👕',
+                `Check out the latest product now available: ${createdProduct.name}`,
+                { productId: createdProduct._id }
+            );
+        }
 
         res.status(201).json(createdProduct);
     } catch (error) {
@@ -242,10 +253,30 @@ const updateProduct = async (req, res) => {
             product.category = category || product.category;
             product.type = type || product.type;
             product.stock = stock !== undefined ? stock : product.stock;
+
+
+            // Check for Discount applied (if new discount is lower than price and valid)
+            let discountTrigger = false;
+            if (discountPrice !== undefined && discountPrice !== null) {
+                if (product.discountPrice === null || discountPrice < product.discountPrice) {
+                    if (discountPrice < (price !== undefined ? price : product.price)) {
+                        discountTrigger = true;
+                    }
+                }
+            }
             product.discountPrice = discountPrice !== undefined ? discountPrice : product.discountPrice;
             product.isVisible = isVisible !== undefined ? isVisible : product.isVisible;
 
             const updatedProduct = await product.save();
+
+            // NOTIFICATION TRIGGER: Discount
+            if (discountTrigger && updatedProduct.isVisible) {
+                broadcastPromotion(
+                    'Limited Time Offer 🔥',
+                    `A product you might like is now at a discounted price!`,
+                    { productId: updatedProduct._id }
+                );
+            }
 
             // Log Activity
             await Activity.create({

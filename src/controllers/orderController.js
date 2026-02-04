@@ -1,5 +1,6 @@
 const Order = require('../models/Order');
 const Activity = require('../models/Activity');
+const { notifyUser } = require('../utils/notificationService');
 
 // @desc Create new order
 // @route POST /api/orders
@@ -71,6 +72,16 @@ const addOrderItems = async (req, res) => {
                 sellerIds: sellerIds // Critical: Allows sellers to see this activity
             }
         });
+
+        // 7. Send Notification (Order Placed)
+        const orderRef = createdOrder._id.toString().substring(18).toUpperCase();
+        await notifyUser(
+            req.user._id,
+            'Order Placed ✅',
+            `Your order #${orderRef} has been placed successfully.`,
+            'order_update',
+            { orderId: createdOrder._id, status: 'Placed' }
+        );
 
         res.status(201).json(createdOrder);
     }
@@ -274,6 +285,61 @@ const updateOrderStatus = async (req, res) => {
             console.warn('Audit fail:', auditErr.message);
         }
 
+        // NOTIFICATION TRIGGER
+        if (order.user) {
+            const shortId = order._id.toString().substring(18).toUpperCase();
+
+            // Get names of updated items
+            const updatedItemNames = order.orderItems
+                .filter(item => targetItemIds.includes(item._id.toString()))
+                .map(i => i.name)
+                .join(', ');
+
+            let title = `Order Update`;
+            let body = `Your order #${shortId} status is now ${status}`;
+
+            // Specific message for Item updates (Multi-seller support)
+            if (updatedItemNames && updatedCount < order.orderItems.length) {
+                body = `Update for ${updatedItemNames}: Status is now ${status}`;
+            }
+
+            switch (status) {
+                case 'Processing':
+                    title = 'Order Processing ⚙️';
+                    if (!updatedItemNames) body = `Your order #${shortId} is now being processed.`;
+                    break;
+                case 'Shipped':
+                    title = 'Order Shipped 🚚';
+                    if (!updatedItemNames) body = `Your order #${shortId} has been shipped!`;
+                    else body = `Your item(s) (${updatedItemNames}) have been shipped 🚚`;
+                    break;
+                case 'Out for Delivery':
+                    title = 'Out for Delivery 📦';
+                    if (!updatedItemNames) body = `Get ready! Your order #${shortId} is out for delivery.`;
+                    else body = `Your item(s) (${updatedItemNames}) are out for delivery 📦`;
+                    break;
+                case 'Delivered':
+                    title = 'Delivered 🎉';
+                    if (!updatedItemNames) body = `Your order #${shortId} has been delivered. Enjoy!`;
+                    else body = `Your item(s) (${updatedItemNames}) have been delivered 🎉`;
+                    break;
+                case 'Cancelled':
+                    title = 'Order Cancelled ❌';
+                    body = `Your order #${shortId} has been cancelled.`;
+                    break;
+            }
+
+            // Only notify if status actually changed or items updated
+            // We already filtered for "updatedCount > 0" or status change earlier
+            await notifyUser(
+                order.user,
+                title,
+                body,
+                'order_update',
+                { orderId: order._id, status: status }
+            );
+        }
+
         res.json(updatedOrder);
     } catch (error) {
         console.error('Update Status Error:', error);
@@ -346,84 +412,150 @@ const getOrdersByUser = async (req, res) => {
 const getStats = async (req, res) => {
     const User = require('../models/User');
     const Product = require('../models/Product');
-    const { startDate, endDate, sellerId, productId } = req.query;
+    const mongoose = require('mongoose'); // Import mongoose for ObjectId
+    const { startDate, endDate, sellerId } = req.query;
 
-    let dateQuery = {};
-    if (startDate || endDate) {
-        dateQuery.createdAt = {};
-        if (startDate) dateQuery.createdAt.$gte = new Date(startDate);
-        if (endDate) dateQuery.createdAt.$lte = new Date(endDate);
-    }
+    try {
+        const matchStage = {
+            status: 'Delivered', // Strict revenue rule
+        };
 
-    if (req.user.role === 'admin') {
-        let orderQuery = { ...dateQuery, status: { $nin: ['Cancelled', 'Failed'] } };
-
-        // If filtering by specific seller
-        if (sellerId) {
-            const sellerProducts = await Product.find({ seller: sellerId }).select('_id');
-            orderQuery["orderItems.product"] = { $in: sellerProducts.map(p => p._id) };
+        // Date Filtering
+        if (startDate || endDate) {
+            matchStage.createdAt = {};
+            if (startDate) matchStage.createdAt.$gte = new Date(startDate);
+            if (endDate) matchStage.createdAt.$lte = new Date(endDate);
         }
 
-        const totalOrders = await Order.countDocuments(orderQuery);
-        const totalUsers = await User.countDocuments({ role: 'user' });
-        const totalSellers = await User.countDocuments({ role: 'seller' });
+        let revenuePipeline = [];
+        const isAdmin = req.user.role === 'admin';
+        const targetSellerId = isAdmin && sellerId && sellerId !== 'all' ? sellerId : (!isAdmin ? req.user._id : null);
 
-        const orders = await Order.find(orderQuery);
+        if (targetSellerId) {
+            // SELLER SPECIFIC REVENUE (Admin viewing seller OR Seller viewing self)
+            // 1. Match delivered orders within date range
+            // 2. Unwind items to check ownership
+            // 3. Lookup product to verify seller
+            // 4. Filter items for this seller
+            // 5. Group by date and sum
 
-        let revenue = 0;
-        const sellerProducts = sellerId ? await Product.find({ seller: sellerId }).select('_id') : [];
-        const sellerProductIds = sellerProducts.map(p => p._id.toString());
+            console.log(`Calculating revenue for seller: ${targetSellerId}`);
 
-        orders.forEach(order => {
-            order.orderItems.forEach(item => {
-                const itemProductId = item.product?._id ? item.product._id.toString() : item.product.toString();
-                if (!sellerId || sellerProductIds.includes(itemProductId)) {
-                    revenue += item.price * (item.qty || item.quantity || 1);
-                }
-            });
+            revenuePipeline = [
+                { $match: matchStage },
+                { $unwind: '$orderItems' },
+                {
+                    $lookup: {
+                        from: 'products',
+                        localField: 'orderItems.product',
+                        foreignField: '_id',
+                        as: 'productInfo'
+                    }
+                },
+                { $unwind: '$productInfo' }, // Convert array to object
+                {
+                    $match: {
+                        'productInfo.seller': typeof targetSellerId === 'string' ? new mongoose.Types.ObjectId(targetSellerId) : targetSellerId
+                    }
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        dailyRevenue: { $sum: { $multiply: ["$orderItems.price", { $ifNull: ["$orderItems.qty", "$orderItems.quantity", 1] }] } },
+                        count: { $sum: 1 } // Items count, not order count
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ];
+
+        } else {
+            // ADMIN GLOBAL REVENUE
+            // Sum total order value
+            revenuePipeline = [
+                { $match: matchStage },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        dailyRevenue: { $sum: "$totalPrice" },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ];
+        }
+
+        const revenueResults = await Order.aggregate(revenuePipeline);
+
+        // Process Graph Data
+        let totalRevenue = 0;
+        const dailyRevenueMap = {};
+
+        revenueResults.forEach(item => {
+            totalRevenue += item.dailyRevenue;
+            dailyRevenueMap[item._id] = item.dailyRevenue;
         });
+
+        const graphData = Object.keys(dailyRevenueMap).map(date => ({
+            date,
+            revenue: dailyRevenueMap[date]
+        })).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Get other counts (independent of 'Delivered' status for general stats, except maybe inventory)
+        // General stats usually show TOTAL orders placed, not just delivered.
+        // But for consistency with "Revenue", maybe we should stick to general activity?
+        // Let's keep existing logic for counts: All non-cancelled orders usually.
+
+        let countQuery = {};
+        if (startDate || endDate) {
+            countQuery.createdAt = matchStage.createdAt;
+        }
+
+        // Refine count query for role
+        if (targetSellerId) {
+            // It's hard to count "orders" for a seller efficiently without similar aggregation if we only want orders containing their products.
+            // But for unrelated counts (Users, Sellers), mostly Admin cares. 
+            // Sellers care about "My Orders".
+
+            // Simplification for Performance: Use a separate count for "Total Orders" if needed, 
+            // but here we can just return the Delivered Count derived from aggregation or do a simple count.
+            // Let's keep it simple and just do a count for "All Non-Cancelled" for the card.
+
+            const Product = require('../models/Product');
+            const sellerProducts = await Product.find({ seller: targetSellerId }).select('_id');
+            const sPIds = sellerProducts.map(p => p._id);
+            countQuery["orderItems.product"] = { $in: sPIds };
+        }
+
+        // Exclude Cancelled for general "Orders" stat
+        countQuery.status = { $nin: ['Cancelled', 'Failed'] };
+
+        const totalOrders = await Order.countDocuments(countQuery);
+
+        // Entitity Counts (Admin Only)
+        let totalUsers = 0;
+        let totalSellers = 0;
+
+        if (isAdmin && !targetSellerId) {
+            totalUsers = await User.countDocuments({ role: 'user' });
+            totalSellers = await User.countDocuments({ role: 'seller' });
+        }
+
+        // Products Count
+        const productQuery = targetSellerId ? { seller: targetSellerId } : {};
+        const totalProducts = await Product.countDocuments(productQuery);
 
         res.json({
             totalOrders,
             totalUsers,
             totalSellers,
-            totalRevenue: revenue,
-        });
-    } else {
-        // Seller
-        const myProducts = await Product.find({ seller: req.user._id });
-        const productIds = myProducts.map(p => p._id.toString());
-
-        let orderQuery = {
-            ...dateQuery,
-            "orderItems.product": { $in: myProducts.map(p => p._id) },
-            status: { $nin: ['Cancelled', 'Failed'] }
-        };
-
-        if (productId) {
-            orderQuery["orderItems.product"] = productId;
-        }
-
-        const orders = await Order.find(orderQuery);
-
-        let sellerRevenue = 0;
-        orders.forEach(order => {
-            order.orderItems.forEach(item => {
-                if (productId) {
-                    if (item.product.toString() === productId) {
-                        sellerRevenue += item.price * (item.qty || item.quantity || 1);
-                    }
-                } else if (productIds.includes(item.product.toString())) {
-                    sellerRevenue += item.price * (item.qty || item.quantity || 1);
-                }
-            });
+            totalProducts,
+            totalRevenue,
+            graphData
         });
 
-        res.json({
-            totalOrders: orders.length,
-            totalProducts: myProducts.length,
-            totalRevenue: sellerRevenue,
-        });
+    } catch (error) {
+        console.error('Stats Aggregation Error:', error);
+        res.status(500).json({ message: 'Failed to calculate analytics' });
     }
 };
 
