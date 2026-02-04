@@ -26,6 +26,7 @@ const userSchema = new mongoose.Schema({
         isDefault: { type: Boolean, default: false }
     }],
     phoneNumber: { type: String },
+    fcmToken: { type: String, default: null },
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {

@@ -405,8 +405,39 @@ const logoutUser = async (req, res) => {
             targetId: req.user._id,
             description: `${req.user.name} logged out of the system.`,
         });
+
+        // Clear FCM Token on logout to prevent notifying wrong user
+        const user = await User.findById(req.user._id);
+        if (user) {
+            user.fcmToken = null;
+            await user.save();
+        }
+
     }
     res.json({ message: 'Logged out successfully' });
 };
 
-module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser };
+// @desc Update FCM Token
+// @route PUT /api/users/push-token
+// @access Private
+const updateFcmToken = async (req, res) => {
+    try {
+        const { fcmToken } = req.body;
+        if (!fcmToken) {
+            return res.status(400).json({ message: 'FCM Token is required' });
+        }
+
+        const user = await User.findById(req.user._id);
+        if (user) {
+            user.fcmToken = fcmToken;
+            await user.save();
+            res.json({ success: true, message: 'FCM Token updated successfully' });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken };
