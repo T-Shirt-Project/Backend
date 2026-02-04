@@ -29,28 +29,56 @@ exports.sendToUser = async (userId, title, body, type, data = {}, imageUrl = nul
             isRead: false
         });
 
+        // Convert data object values to strings (FCM requirement)
+        const stringData = {};
+        Object.keys(data).forEach(key => {
+            stringData[key] = String(data[key]);
+        });
+
         const message = {
             notification: {
                 title,
                 body,
-                ...(imageUrl && { imageUrl })
+                ...(imageUrl && { image: imageUrl })
             },
             data: {
                 type,
-                ...data,
+                ...stringData,
                 click_action: 'FLUTTER_NOTIFICATION_CLICK'
+            },
+            android: {
+                priority: 'high',
+                notification: {
+                    channelId: 'high_importance_channel',
+                    priority: 'high',
+                    sound: 'default',
+                    ...(imageUrl && { imageUrl })
+                }
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        sound: 'default',
+                        contentAvailable: true,
+                        badge: 1
+                    }
+                },
+                fcmOptions: {
+                    ...(imageUrl && { imageUrl })
+                }
             },
             token: user.fcmToken
         };
 
-        await admin.messaging().send(message);
-        console.log(`Notification sent to user ${userId}`);
+        const response = await admin.messaging().send(message);
+        console.log(`✅ Notification sent to user ${userId}:`, response);
     } catch (error) {
-        console.error(`Error sending notification to user ${userId}:`, error.message);
+        console.error(`❌ Error sending notification to user ${userId}:`, error.message);
         // Handle invalid token
-        if (error.code === 'messaging/registration-token-not-registered') {
+        if (error.code === 'messaging/registration-token-not-registered' ||
+            error.code === 'messaging/invalid-registration-token') {
             await User.findByIdAndUpdate(userId, { $unset: { fcmToken: 1 } });
-            console.log(`Removed invalid FCM token for user ${userId}`);
+            console.log(`🗑️ Removed invalid FCM token for user ${userId}`);
         }
     }
 };
@@ -74,23 +102,50 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
             data
         });
 
+        // Convert data object values to strings (FCM requirement)
+        const stringData = {};
+        Object.keys(data).forEach(key => {
+            stringData[key] = String(data[key]);
+        });
+
         const message = {
             notification: {
                 title,
                 body,
-                ...(imageUrl && { imageUrl })
+                ...(imageUrl && { image: imageUrl })
             },
             data: {
                 type,
-                ...data,
+                ...stringData,
                 click_action: 'FLUTTER_NOTIFICATION_CLICK'
+            },
+            android: {
+                priority: 'high',
+                notification: {
+                    channelId: 'high_importance_channel',
+                    priority: 'high',
+                    sound: 'default',
+                    ...(imageUrl && { imageUrl })
+                }
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        sound: 'default',
+                        contentAvailable: true,
+                        badge: 1
+                    }
+                },
+                fcmOptions: {
+                    ...(imageUrl && { imageUrl })
+                }
             },
             topic: 'all_users' // Topic for all users
         };
 
-        await admin.messaging().send(message);
-        console.log('Global notification sent to topic: all_users');
+        const response = await admin.messaging().send(message);
+        console.log('✅ Global notification sent to topic: all_users', response);
     } catch (error) {
-        console.error('Error sending global notification:', error.message);
+        console.error('❌ Error sending global notification:', error.message);
     }
 };
