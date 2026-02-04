@@ -40,4 +40,7 @@ const notificationSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// Index for valid sorting and filtering
+notificationSchema.index({ userId: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Notification', notificationSchema);

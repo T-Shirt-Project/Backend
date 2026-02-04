@@ -2,10 +2,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Activity = require('../models/Activity');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const sendEmail = require('../utils/sendEmail');
+
 
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET || 'secret123', { expiresIn: '30d' });
@@ -14,6 +11,7 @@ const generateToken = (id) => {
 // @desc Auth user & get token
 // @route POST /api/users/login
 const authUser = async (req, res) => {
+    console.log('Incoming Login Request:', req.body);
     try {
         const { email, password } = req.body;
 
@@ -24,43 +22,48 @@ const authUser = async (req, res) => {
         const normalizedEmail = email.toLowerCase().trim();
         const user = await User.findOne({ email: normalizedEmail });
 
-        if (user && (await user.matchPassword(password))) {
-            if (!user.isVerified) {
-                return res.status(401).json({ message: 'Please verify your email before logging in.' });
-            }
-            if (user.status === 'suspended') {
-                return res.status(403).json({ message: 'Account suspended. Access terminated.' });
-            }
-            if (user.status === 'disabled') {
-                return res.status(401).json({ message: 'Account disabled. Pending approval.' });
-            }
-            if (user.status === 'deleted') {
-                return res.status(401).json({ message: 'Account deleted. Access restricted.' });
-            }
+        if (user) {
+            if (await user.matchPassword(password)) {
 
-            // Log login activity
-            await Activity.create({
-                userId: user._id,
-                role: user.role,
-                type: 'login',
-                targetType: 'User',
-                targetId: user._id,
-                description: `${user.name} logged into the system.`,
-                details: { ip: req.ip, userAgent: req.headers['user-agent'] }
-            });
+                if (user.status === 'suspended') {
+                    return res.status(403).json({ message: 'Account suspended. Access terminated.' });
+                }
+                if (user.status === 'disabled') {
+                    return res.status(401).json({ message: 'Account disabled. Pending approval.' });
+                }
+                if (user.status === 'deleted') {
+                    return res.status(401).json({ message: 'Account deleted. Access restricted.' });
+                }
 
-            res.json({
-                _id: user._id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                status: user.status,
-                phoneNumber: user.phoneNumber,
-                token: generateToken(user._id),
-                addresses: user.addresses
-            });
+                // Log login activity
+                await Activity.create({
+                    userId: user._id,
+                    role: user.role,
+                    type: 'login',
+                    targetType: 'User',
+                    targetId: user._id,
+                    description: `${user.name} logged into the system.`,
+                    details: { ip: req.ip, userAgent: req.headers['user-agent'] }
+                });
+
+                console.log('Login Successful for:', email);
+                res.json({
+                    _id: user._id,
+                    name: user.name,
+                    email: user.email,
+                    role: user.role,
+                    status: user.status,
+                    phoneNumber: user.phoneNumber,
+                    token: generateToken(user._id),
+                    addresses: user.addresses
+                });
+            } else {
+                console.log('Login Failed: Incorrect password for', email);
+                res.status(401).json({ message: 'Incorrect password' });
+            }
         } else {
-            res.status(401).json({ message: 'Invalid email or password' });
+            console.log('Login Failed: Email not found for', email);
+            res.status(404).json({ message: 'Email not found' });
         }
     } catch (error) {
         console.error('Login Error:', error);
@@ -71,6 +74,7 @@ const authUser = async (req, res) => {
 // @desc Register a new user
 // @route POST /api/users
 const registerUser = async (req, res) => {
+    console.log('Incoming Register Request:', req.body);
     try {
         const { name, email, password, role, phoneNumber } = req.body;
 
@@ -82,6 +86,7 @@ const registerUser = async (req, res) => {
         const userExists = await User.findOne({ email: normalizedEmail });
 
         if (userExists) {
+            console.log('Registration Failed: User already exists:', email);
             res.status(400).json({ message: 'User already exists' });
             return;
         }
@@ -89,9 +94,8 @@ const registerUser = async (req, res) => {
         // Role enforcement: No Retailer. Only User or Seller. Admin cannot be self-registered.
         const finalRole = (role === 'seller') ? 'seller' : 'user';
 
-        // Sellers need approval (start as disabled)
-        // Users are active immediately
-        const status = finalRole === 'user' ? 'active' : 'disabled';
+        // All self-registered users (User/Seller) start as Active
+        const status = 'active';
 
         const user = await User.create({
             name,
@@ -99,8 +103,7 @@ const registerUser = async (req, res) => {
             password,
             role: finalRole,
             phoneNumber,
-            status,
-            isVerified: false // Force verification
+            status
         });
 
         if (user) {
@@ -115,47 +118,17 @@ const registerUser = async (req, res) => {
                 details: { email: user.email, role: finalRole }
             });
 
-            // Verification Flow
-            try {
-                const verificationToken = user.getVerificationToken();
-                await user.save({ validateBeforeSave: false });
-
-                // Construct Verify URL
-                // If simple API:
-                const verifyUrl = `${req.protocol}://${req.get('host')}/api/users/verifyemail/${verificationToken}`;
-
-                // Email message
-                const message = `
-                    <h1>Welcome to T-Shirt App!</h1>
-                    <p>Please verify your email address to activate your account.</p>
-                    <a href="${verifyUrl}" style="background:#4CAF50;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Verify Email</a>
-                    <p>Or click this link: <a href="${verifyUrl}">${verifyUrl}</a></p>
-                    <p>This link expires in 15 minutes.</p>
-                `;
-
-                await sendEmail({
-                    email: user.email,
-                    subject: 'Verify your email - T-Shirt App',
-                    message: `Please verify your email: ${verifyUrl}`,
-                    html: message
-                });
-
-                res.status(201).json({
-                    _id: user._id,
-                    name: user.name,
-                    email: user.email,
-                    role: user.role,
-                    message: `Registration successful. Verification email sent to ${user.email}.`
-                });
-
-            } catch (error) {
-                console.error("Email send error:", error);
-                user.verificationToken = undefined;
-                user.verificationTokenExpire = undefined;
-                await user.save({ validateBeforeSave: false });
-                res.status(500).json({ message: 'User registered, but email failed. Please contact support.' });
-            }
+            console.log('Registration Successful for:', email);
+            res.status(201).json({
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                token: generateToken(user._id),
+                message: 'Registration successful.'
+            });
         } else {
+            console.log('Registration Failed: Invalid user data');
             res.status(400).json({ message: 'Invalid user data' });
         }
     } catch (error) {
@@ -164,141 +137,7 @@ const registerUser = async (req, res) => {
     }
 };
 
-// @desc Verify User Email
-// @route GET /api/users/verifyemail/:token
-const verifyEmail = async (req, res) => {
-    try {
-        const token = req.params.token;
-        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
-        const user = await User.findOne({
-            verificationToken: hashedToken,
-            verificationTokenExpire: { $gt: Date.now() }
-        });
-
-        if (!user) {
-            return res.status(400).send(`
-                <h1 style="color:red;text-align:center;font-family:sans-serif;margin-top:50px;">
-                    Invalid or Expired Token
-                </h1>
-            `);
-        }
-
-        user.isVerified = true;
-        user.verificationToken = undefined;
-        user.verificationTokenExpire = undefined;
-        await user.save();
-
-        res.status(200).send(`
-            <div style="text-align:center;font-family:sans-serif;margin-top:50px;">
-                <h1 style="color:green;">Email Verified Successfully!</h1>
-                <p>You can now close this window and log in to the app.</p>
-            </div>
-        `);
-    } catch (error) {
-        res.status(500).send("Server Error");
-    }
-};
-
-// @desc Request OTP for Login/Verification
-// @route POST /api/users/request-otp
-const requestOtp = async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ message: 'Email is required' });
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    if (user.status === 'suspended' || user.status === 'disabled') {
-        return res.status(403).json({ message: 'Account access restricted.' });
-    }
-
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Hash OTP securely
-    const otpHash = crypto.createHash('sha256').update(otp).digest('hex');
-    const otpExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-    user.otpHash = otpHash;
-    user.otpExpiresAt = otpExpiresAt;
-    await user.save({ validateBeforeSave: false });
-
-    // Load HTML Template
-    let templatePath = path.join(__dirname, '../templates/otp-verification.html');
-    let htmlContent = fs.readFileSync(templatePath, 'utf8');
-
-    // Inject Data
-    htmlContent = htmlContent.replace('{{OTP_CODE}}', otp);
-    htmlContent = htmlContent.replace('{{YEAR}}', new Date().getFullYear());
-
-    try {
-        await sendEmail({
-            email: user.email,
-            subject: 'Your Verification Code - T-Shirt App',
-            message: `Your OTP is ${otp}. Valid for 10 minutes.`,
-            html: htmlContent
-        });
-
-        res.json({ message: 'OTP sent to your email.' });
-    } catch (error) {
-        user.otpHash = undefined;
-        user.otpExpiresAt = undefined;
-        await user.save({ validateBeforeSave: false });
-        res.status(500).json({ message: 'Failed to send OTP email.' });
-    }
-};
-
-// @desc Verify OTP
-// @route POST /api/users/verify-otp
-const verifyOtp = async (req, res) => {
-    const { email, otp } = req.body;
-    if (!email || !otp) return res.status(400).json({ message: 'Email and OTP required' });
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    if (!user.otpHash || !user.otpExpiresAt) {
-        return res.status(400).json({ message: 'No OTP requested or expired.' });
-    }
-
-    if (user.otpExpiresAt < Date.now()) {
-        return res.status(400).json({ message: 'OTP has expired.' });
-    }
-
-    const inputHash = crypto.createHash('sha256').update(otp).digest('hex');
-
-    if (inputHash !== user.otpHash) {
-        return res.status(400).json({ message: 'Invalid OTP.' });
-    }
-
-    // Success - Clear OTP and Mark Verified
-    user.otpHash = undefined;
-    user.otpExpiresAt = undefined;
-    user.isVerified = true;
-    await user.save();
-
-    // Log Logic
-    await Activity.create({
-        userId: user._id,
-        role: user.role,
-        type: 'login',
-        targetType: 'User',
-        targetId: user._id,
-        description: `${user.name} logged in via OTP.`,
-        details: { ip: req.ip, method: 'OTP' }
-    });
-
-    res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        status: user.status,
-        token: generateToken(user._id),
-        message: 'Login successful'
-    });
-};
 
 // @desc Get user profile
 // @route GET /api/users/profile
@@ -566,31 +405,42 @@ const logoutUser = async (req, res) => {
             targetId: req.user._id,
             description: `${req.user.name} logged out of the system.`,
         });
+
+        // Clear FCM Token on logout to prevent notifying wrong user
+        const user = await User.findById(req.user._id);
+        if (user) {
+            user.fcmToken = null;
+            await user.save();
+        }
+
     }
     res.json({ message: 'Logged out successfully' });
 };
 
+
 // @desc Update FCM Token for Push Notifications
 // @route PUT /api/users/push-token
+// @access Private
 const updateFcmToken = async (req, res) => {
     try {
         const { fcmToken } = req.body;
         if (!fcmToken) {
-            return res.status(400).json({ message: 'Missing FCM token' });
+            return res.status(400).json({ message: 'FCM Token is required' });
         }
 
         const user = await User.findById(req.user._id);
         if (user) {
             user.fcmToken = fcmToken;
             await user.save();
-            res.json({ message: 'FCM Token updated' });
+            res.json({ success: true, message: 'FCM Token updated successfully' });
         } else {
             res.status(404).json({ message: 'User not found' });
         }
     } catch (error) {
         console.error('Update FCM Token Error:', error);
-        res.status(500).json({ message: 'Failed to update token' });
+        res.status(500).json({ message: 'Server Error' });
     }
 };
 
-module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, verifyEmail, requestOtp, verifyOtp, updateFcmToken };
+module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken };
+

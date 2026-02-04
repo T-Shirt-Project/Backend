@@ -13,6 +13,9 @@ const addOrderItems = async (req, res) => {
         taxPrice,
         shippingPrice,
         totalPrice,
+        originalTotalPrice,
+        savings,
+        contactPhone
     } = req.body;
 
     if (orderItems && orderItems.length === 0) {
@@ -33,11 +36,14 @@ const addOrderItems = async (req, res) => {
             user: req.user._id,
             userSnapshot, // Store user snapshot for data integrity
             shippingAddress,
+            contactPhone: contactPhone || userSnapshot.phone, // Capture contact phone snapshot
             paymentMethod,
-            itemsPrice,
-            taxPrice,
-            shippingPrice,
+            itemsPrice: itemsPrice || totalPrice,
+            taxPrice: taxPrice || 0,
+            shippingPrice: shippingPrice || 0,
             totalPrice,
+            originalTotalPrice: originalTotalPrice || totalPrice,
+            savings: savings || 0,
             status: 'Placed'
         });
 
@@ -66,6 +72,7 @@ const addOrderItems = async (req, res) => {
                 sellerIds: sellerIds // Critical: Allows sellers to see this activity
             }
         });
+
 
         // NOTIFICATION: Order Placed
         notificationService.sendToUser(
@@ -129,133 +136,208 @@ const updateOrderToPaid = async (req, res) => {
 
 // @desc Update order status
 // @route PUT /api/orders/:id/status
-// @access Private/Seller only (Admin cannot update)
+// @access Private/Seller or Admin
 const updateOrderStatus = async (req, res) => {
     try {
         let { status } = req.body;
-
-        // sanitize status string
         if (status) status = status.trim();
 
         const orderId = req.params.id;
-        console.log(`Attempting to update order ${orderId} to status: '${status}' by user: ${req.user._id} (${req.user.role})`);
+        const user = req.user;
 
         // Validate status value
         const validStatuses = ['Placed', 'Processing', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'];
         if (!status || !validStatuses.includes(status)) {
-            console.error(`Invalid status received: '${status}'`);
             return res.status(400).json({
                 message: `Invalid order status: '${status}'. Allowed: ${validStatuses.join(', ')}`
             });
         }
 
-        // Prevent manual setting of "Placed" status (system-controlled)
-        if (status === 'Placed') {
-            return res.status(400).json({
-                message: 'Order Placed status is system-controlled and cannot be set manually'
-            });
-        }
-
-        const order = await Order.findById(orderId).populate('orderItems.product');
-
+        const order = await Order.findById(orderId);
         if (!order) {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        // SELLER AUTHORIZATION: Verify seller owns at least one product in the order
-        if (req.user.role === 'seller') {
-            const Product = require('../models/Product');
-            const myProducts = await Product.find({ seller: req.user._id }).select('_id');
-            const productIds = myProducts.map(p => p._id.toString());
+        // MIGRATION: Ensure all items have a status (default to current order status if missing)
+        // This ensures that if we update one item, others don't fall back to the NEW order status randomly.
+        order.orderItems.forEach(item => {
+            if (!item.status) {
+                item.status = order.status;
+            }
+        });
 
-            // Check if seller has any product in the order (Handling potential null products if deleted)
-            const hasOwnProduct = order.orderItems.some(item =>
-                item.product && productIds.includes(item.product._id.toString())
+        // AUTHORIZATION & ITEM SELECTION
+        let targetItemIds = [];
+
+        if (user.role === 'admin') {
+            // Admin updates ALL items (except maybe already final ones, but let's stick to simple override)
+            // Admin can force status Sync
+            targetItemIds = order.orderItems.map(i => i._id.toString());
+            console.log(`Admin ${user.name} overriding status for order ${orderId} to ${status}`);
+        } else if (user.role === 'seller') {
+            // SELLER AUTHORIZATION: Verify seller owns at least one product in the order
+            const Product = require('../models/Product');
+            const myProducts = await Product.find({ seller: user._id }).select('_id');
+            const myProductIds = myProducts.map(p => p._id.toString());
+
+            const sellerItems = order.orderItems.filter(item =>
+                item.product && myProductIds.includes(item.product.toString())
             );
 
-            if (!hasOwnProduct) {
-                console.error(`User ${req.user._id} not authorized to update order ${orderId}`);
-                return res.status(403).json({
-                    message: 'You are not authorized to update this order'
-                });
+            if (sellerItems.length === 0) {
+                return res.status(403).json({ message: 'You are not authorized to update this order' });
             }
+
+            // Identify items belonging to this seller
+            targetItemIds = sellerItems.map(i => i._id.toString());
+
+            // Seller Restrictions
+            if (status === 'Placed') {
+                return res.status(400).json({ message: 'Sellers cannot set status back to Placed' });
+            }
+        } else {
+            return res.status(403).json({ message: 'Unauthorized role for status update' });
         }
 
-        // Prevent updating already delivered orders (Unless it's an error correction, but typically locked)
-        // Allowing 'Delivered' -> 'Delivered' is idempotent, but 'Delivered' -> 'Shipped' is weird.
-        // Assuming strict forward flow except cancellation.
-        if (order.status === 'Delivered' && status !== 'Delivered') {
-            return res.status(400).json({
-                message: 'Cannot change status of an order that is already Delivered'
-            });
-        }
-
-        // Prevent updating cancelled orders
+        // BUSINESS LOGIC: Status Transition Validation (Strict forward flow)
         if (order.status === 'Cancelled') {
-            return res.status(400).json({
-                message: 'Cannot update status of cancelled orders'
-            });
+            return res.status(400).json({ message: 'Cannot update status of a cancelled order' });
         }
 
-        // Define status progression order
-        const statusOrder = {
+        const statusRank = {
             'Placed': 0,
             'Processing': 1,
             'Shipped': 2,
             'Out for Delivery': 3,
             'Delivered': 4,
-            'Cancelled': -1
+            'Cancelled': 99
         };
 
-        const currentStatusLevel = statusOrder[order.status] !== undefined ? statusOrder[order.status] : -99;
-        const newStatusLevel = statusOrder[status];
+        const currentRank = statusRank[order.status] || 0;
+        const newRank = statusRank[status];
 
-        // Prevent backward transitions (except to Cancelled or if current status is invalid/custom)
-        if (status !== 'Cancelled' && currentStatusLevel !== -99 && newStatusLevel < currentStatusLevel) {
+        // Allow Admin to move backward if needed for corrections, but Seller is strict forward
+        if (user.role !== 'admin' && status !== 'Cancelled' && newRank < currentRank) {
+            // Note: We check Order Level rank, but technically we should check Item Level.
+            // For simplicity and backward stability, if Order is "Shipped", we don't let Seller move their item to "Processing"?
+            // Actually, if Seller A is "Shipped", and they want to correct to "Processing", they might be blocked if Order is "Shipped".
+            // But this matches the previous logic.
             return res.status(400).json({
                 message: `Invalid status transition: Cannot move from ${order.status} to ${status}`
             });
         }
 
-        // Store old status for logging
+        // UPDATE ITEMS
+        let updatedCount = 0;
+        order.orderItems.forEach(item => {
+            if (targetItemIds.includes(item._id.toString())) {
+                // Don't update if item is Cancelled (unless Admin forces?)
+                if (item.status !== 'Cancelled') {
+                    item.status = status;
+                    updatedCount++;
+                }
+            }
+        });
+
+        if (updatedCount === 0) {
+            return res.status(400).json({ message: 'No eligible active items to update (items might be Cancelled)' });
+        }
+
+        // UPDATE ORDER LEVEL STATUS
+        // We update the root status to reflect the change, primarily for the "Dashboard" view.
+        // If specific items advanced, we advance the Order status.
+        // If the new status is "ahead", we adopt it.
         const oldStatus = order.status;
+        if (newRank >= currentRank && status !== 'Cancelled') {
+            order.status = status;
+        }
 
-        // Update order status
-        order.status = status;
-
-        // Update delivery flags
-        if (status === 'Delivered') {
+        // Edge Case: If all items are Delivered, ensure Order is Delivered
+        const activeItems = order.orderItems.filter(i => i.status !== 'Cancelled');
+        const allDelivered = activeItems.every(i => i.status === 'Delivered');
+        if (allDelivered && activeItems.length > 0) {
+            order.status = 'Delivered';
             order.isDelivered = true;
             order.deliveredAt = Date.now();
         }
 
         const updatedOrder = await order.save();
-        console.log(`Order ${orderId} updated successfully to ${status}`);
 
-        // Log activity for audit trail with actor role tracking
+        // AUDIT LOG
         try {
             await Activity.create({
-                userId: req.user._id,
-                role: req.user.role,
+                userId: user._id,
+                role: user.role,
                 type: 'order_status_change',
                 targetType: 'Order',
                 targetId: order._id,
-                description: `[${req.user.role.toUpperCase()}] ${req.user.name} updated order #${order._id.toString().substring(18).toUpperCase()} status: ${oldStatus} → ${status}`,
+                description: `Status updated: ${oldStatus} → ${status} (${user.role})`,
                 details: {
                     orderId: order._id,
                     oldStatus,
                     newStatus: status,
-                    actorRole: req.user.role,
-                    actorId: req.user._id,
-                    actorName: req.user.name,
-                    targetUserId: order.user,
-                    timestamp: new Date(),
-                    isAdminOverride: req.user.role === 'admin'
+                    updatedItemsCount: updatedCount,
+                    actorName: user.name,
+                    isAdminOverride: user.role === 'admin'
                 }
             });
         } catch (auditErr) {
-            console.error('Audit log failed, but order updated:', auditErr);
-            // Non-blocking error
+            console.warn('Audit fail:', auditErr.message);
+        }
+
+        // NOTIFICATION TRIGGER
+        if (order.user) {
+            const shortId = order._id.toString().substring(18).toUpperCase();
+
+            // Get names of updated items
+            const updatedItemNames = order.orderItems
+                .filter(item => targetItemIds.includes(item._id.toString()))
+                .map(i => i.name)
+                .join(', ');
+
+            let title = `Order Update`;
+            let body = `Your order #${shortId} status is now ${status}`;
+
+            // Specific message for Item updates (Multi-seller support)
+            if (updatedItemNames && updatedCount < order.orderItems.length) {
+                body = `Update for ${updatedItemNames}: Status is now ${status}`;
+            }
+
+            switch (status) {
+                case 'Processing':
+                    title = 'Order Processing ⚙️';
+                    if (!updatedItemNames) body = `Your order #${shortId} is now being processed.`;
+                    break;
+                case 'Shipped':
+                    title = 'Order Shipped 🚚';
+                    if (!updatedItemNames) body = `Your order #${shortId} has been shipped!`;
+                    else body = `Your item(s) (${updatedItemNames}) have been shipped 🚚`;
+                    break;
+                case 'Out for Delivery':
+                    title = 'Out for Delivery 📦';
+                    if (!updatedItemNames) body = `Get ready! Your order #${shortId} is out for delivery.`;
+                    else body = `Your item(s) (${updatedItemNames}) are out for delivery 📦`;
+                    break;
+                case 'Delivered':
+                    title = 'Delivered 🎉';
+                    if (!updatedItemNames) body = `Your order #${shortId} has been delivered. Enjoy!`;
+                    else body = `Your item(s) (${updatedItemNames}) have been delivered 🎉`;
+                    break;
+                case 'Cancelled':
+                    title = 'Order Cancelled ❌';
+                    body = `Your order #${shortId} has been cancelled.`;
+                    break;
+            }
+
+            // Only notify if status actually changed or items updated
+            // We already filtered for "updatedCount > 0" or status change earlier
+            await notifyUser(
+                order.user,
+                title,
+                body,
+                'order_update',
+                { orderId: order._id, status: status }
+            );
         }
 
         // NOTIFICATIONS: Status Updates
@@ -299,11 +381,8 @@ const updateOrderStatus = async (req, res) => {
 
         res.json(updatedOrder);
     } catch (error) {
-        console.error('Update Order Status Error:', error);
-        res.status(500).json({
-            message: 'Failed to update order status',
-            error: error.message
-        });
+        console.error('Update Status Error:', error);
+        res.status(500).json({ message: 'Internal server error during status sync' });
     }
 };
 
@@ -372,91 +451,158 @@ const getOrdersByUser = async (req, res) => {
 const getStats = async (req, res) => {
     const User = require('../models/User');
     const Product = require('../models/Product');
-    const { startDate, endDate, sellerId, productId } = req.query;
+    const mongoose = require('mongoose'); // Import mongoose for ObjectId
+    const { startDate, endDate, sellerId } = req.query;
 
-    let dateQuery = {};
-    if (startDate || endDate) {
-        dateQuery.createdAt = {};
-        if (startDate) dateQuery.createdAt.$gte = new Date(startDate);
-        if (endDate) dateQuery.createdAt.$lte = new Date(endDate);
-    }
+    try {
+        const matchStage = {
+            status: 'Delivered', // Strict revenue rule
+        };
 
-    if (req.user.role === 'admin') {
-        let orderQuery = { ...dateQuery, status: { $nin: ['Cancelled', 'Failed'] } };
-
-        // If filtering by specific seller
-        if (sellerId) {
-            const sellerProducts = await Product.find({ seller: sellerId }).select('_id');
-            orderQuery["orderItems.product"] = { $in: sellerProducts.map(p => p._id) };
+        // Date Filtering
+        if (startDate || endDate) {
+            matchStage.createdAt = {};
+            if (startDate) matchStage.createdAt.$gte = new Date(startDate);
+            if (endDate) matchStage.createdAt.$lte = new Date(endDate);
         }
 
-        const totalOrders = await Order.countDocuments(orderQuery);
-        const totalUsers = await User.countDocuments({ role: 'user' });
-        const totalSellers = await User.countDocuments({ role: 'seller' });
+        let revenuePipeline = [];
+        const isAdmin = req.user.role === 'admin';
+        const targetSellerId = isAdmin && sellerId && sellerId !== 'all' ? sellerId : (!isAdmin ? req.user._id : null);
 
-        const orders = await Order.find(orderQuery);
+        if (targetSellerId) {
+            // SELLER SPECIFIC REVENUE (Admin viewing seller OR Seller viewing self)
+            // 1. Match delivered orders within date range
+            // 2. Unwind items to check ownership
+            // 3. Lookup product to verify seller
+            // 4. Filter items for this seller
+            // 5. Group by date and sum
 
-        let revenue = 0;
-        const sellerProducts = sellerId ? await Product.find({ seller: sellerId }).select('_id') : [];
-        const sellerProductIds = sellerProducts.map(p => p._id.toString());
+            console.log(`Calculating revenue for seller: ${targetSellerId}`);
 
-        orders.forEach(order => {
-            order.orderItems.forEach(item => {
-                const itemProductId = item.product?._id ? item.product._id.toString() : item.product.toString();
-                if (!sellerId || sellerProductIds.includes(itemProductId)) {
-                    revenue += item.price * (item.qty || item.quantity || 1);
-                }
-            });
+            revenuePipeline = [
+                { $match: matchStage },
+                { $unwind: '$orderItems' },
+                {
+                    $lookup: {
+                        from: 'products',
+                        localField: 'orderItems.product',
+                        foreignField: '_id',
+                        as: 'productInfo'
+                    }
+                },
+                { $unwind: '$productInfo' }, // Convert array to object
+                {
+                    $match: {
+                        'productInfo.seller': typeof targetSellerId === 'string' ? new mongoose.Types.ObjectId(targetSellerId) : targetSellerId
+                    }
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        dailyRevenue: { $sum: { $multiply: ["$orderItems.price", { $ifNull: ["$orderItems.qty", "$orderItems.quantity", 1] }] } },
+                        count: { $sum: 1 } // Items count, not order count
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ];
+
+        } else {
+            // ADMIN GLOBAL REVENUE
+            // Sum total order value
+            revenuePipeline = [
+                { $match: matchStage },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        dailyRevenue: { $sum: "$totalPrice" },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ];
+        }
+
+        const revenueResults = await Order.aggregate(revenuePipeline);
+
+        // Process Graph Data
+        let totalRevenue = 0;
+        const dailyRevenueMap = {};
+
+        revenueResults.forEach(item => {
+            totalRevenue += item.dailyRevenue;
+            dailyRevenueMap[item._id] = item.dailyRevenue;
         });
+
+        const graphData = Object.keys(dailyRevenueMap).map(date => ({
+            date,
+            revenue: dailyRevenueMap[date]
+        })).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Get other counts (independent of 'Delivered' status for general stats, except maybe inventory)
+        // General stats usually show TOTAL orders placed, not just delivered.
+        // But for consistency with "Revenue", maybe we should stick to general activity?
+        // Let's keep existing logic for counts: All non-cancelled orders usually.
+
+        let countQuery = {};
+        if (startDate || endDate) {
+            countQuery.createdAt = matchStage.createdAt;
+        }
+
+        // Refine count query for role
+        if (targetSellerId) {
+            // It's hard to count "orders" for a seller efficiently without similar aggregation if we only want orders containing their products.
+            // But for unrelated counts (Users, Sellers), mostly Admin cares. 
+            // Sellers care about "My Orders".
+
+            // Simplification for Performance: Use a separate count for "Total Orders" if needed, 
+            // but here we can just return the Delivered Count derived from aggregation or do a simple count.
+            // Let's keep it simple and just do a count for "All Non-Cancelled" for the card.
+
+            const Product = require('../models/Product');
+            const sellerProducts = await Product.find({ seller: targetSellerId }).select('_id');
+            const sPIds = sellerProducts.map(p => p._id);
+            countQuery["orderItems.product"] = { $in: sPIds };
+        }
+
+        // Exclude Cancelled for general "Orders" stat
+        countQuery.status = { $nin: ['Cancelled', 'Failed'] };
+
+        const totalOrders = await Order.countDocuments(countQuery);
+
+        // Entitity Counts (Admin Only)
+        let totalUsers = 0;
+        let totalSellers = 0;
+
+        if (isAdmin && !targetSellerId) {
+            totalUsers = await User.countDocuments({ role: 'user' });
+            totalSellers = await User.countDocuments({ role: 'seller' });
+        }
+
+        // Products Count
+        const productQuery = targetSellerId ? { seller: targetSellerId } : {};
+        const totalProducts = await Product.countDocuments(productQuery);
 
         res.json({
             totalOrders,
             totalUsers,
             totalSellers,
-            totalRevenue: revenue,
-        });
-    } else {
-        // Seller
-        const myProducts = await Product.find({ seller: req.user._id });
-        const productIds = myProducts.map(p => p._id.toString());
-
-        let orderQuery = {
-            ...dateQuery,
-            "orderItems.product": { $in: myProducts.map(p => p._id) },
-            status: { $nin: ['Cancelled', 'Failed'] }
-        };
-
-        if (productId) {
-            orderQuery["orderItems.product"] = productId;
-        }
-
-        const orders = await Order.find(orderQuery);
-
-        let sellerRevenue = 0;
-        orders.forEach(order => {
-            order.orderItems.forEach(item => {
-                if (productId) {
-                    if (item.product.toString() === productId) {
-                        sellerRevenue += item.price * (item.qty || item.quantity || 1);
-                    }
-                } else if (productIds.includes(item.product.toString())) {
-                    sellerRevenue += item.price * (item.qty || item.quantity || 1);
-                }
-            });
+            totalProducts,
+            totalRevenue,
+            graphData
         });
 
-        res.json({
-            totalOrders: orders.length,
-            totalProducts: myProducts.length,
-            totalRevenue: sellerRevenue,
-        });
+    } catch (error) {
+        console.error('Stats Aggregation Error:', error);
+        res.status(500).json({ message: 'Failed to calculate analytics' });
     }
 };
 
-// @desc Cancel order
+// @desc Cancel order or specific item
 // @route PUT /api/orders/:id/cancel
 const cancelOrder = async (req, res) => {
     const order = await Order.findById(req.params.id);
+    const { itemId } = req.body;
 
     if (order) {
         if (order.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
@@ -464,48 +610,100 @@ const cancelOrder = async (req, res) => {
             return;
         }
 
-        if (order.status !== 'Placed') {
-            res.status(400).json({ message: 'Order cannot be cancelled as it is already ' + order.status });
-            return;
-        }
+        // Helper to check if a status allows cancellation
+        const isCancellable = (status) => {
+            // BACKWARD COMPATIBILITY: If item status is undefined, check order status
+            // RULE: Can only cancel if 'Placed'. 
+            // If status is 'Processing' or later, CANNOT cancel.
+            const s = status || order.status;
+            return s === 'Placed';
+        };
 
-        order.status = 'Cancelled';
-        const updatedOrder = await order.save();
+        if (itemId) {
+            // ITEM LEVEL CANCELLATION
+            const item = order.orderItems.find(i => i._id.toString() === itemId);
+            if (!item) {
+                res.status(404).json({ message: 'Order item not found' });
+                return;
+            }
 
-        const productNames = order.orderItems.map(item => item.name).join(', ');
+            if (!isCancellable(item.status)) {
+                res.status(400).json({
+                    message: `Item cannot be cancelled as it is already ${item.status || order.status || 'Processing'}`
+                });
+                return;
+            }
 
-        // Find unique sellers for these products to tag them in the log
-        const Product = require('../models/Product');
-        const orderProducts = await Product.find({ _id: { $in: order.orderItems.map(i => i.product) } });
-        const sellerIds = [...new Set(orderProducts.map(p => p.seller.toString()))];
+            if (item.status === 'Cancelled') {
+                res.status(400).json({ message: 'Item is already cancelled' });
+                return;
+            }
 
-        if (req.user.role === 'user') {
-            // Log as cancel request
-            await Activity.create({
-                userId: req.user._id,
-                role: 'user',
-                type: 'cancel_requested',
-                targetType: 'Order',
-                targetId: order._id,
-                description: `Submitted a cancellation request for order #${order._id.toString().substring(18).toUpperCase()}`,
-                details: { orderId: order._id, reason: req.body.reason || 'User initiated', sellerIds }
+            item.status = 'Cancelled';
+
+            // Recalculate Order Status
+            // If all items are Cancelled, Order is Cancelled
+            const allCancelled = order.orderItems.every(i => i.status === 'Cancelled');
+            if (allCancelled) {
+                order.status = 'Cancelled';
+            }
+
+        } else {
+            // FULL ORDER CANCELLATION
+            // Verify ALL items (or at least one active item) are cancellable
+            // If ANY active item is not 'Placed', fail the whole cancellation
+            const activeItems = order.orderItems.filter(i => i.status !== 'Cancelled');
+            const canCancelAll = activeItems.every(i => isCancellable(i.status));
+
+            if (!canCancelAll) {
+                res.status(400).json({
+                    message: 'Order cannot be cancelled because one or more items are already being processed.'
+                });
+                return;
+            }
+
+            order.status = 'Cancelled';
+            order.orderItems.forEach(item => {
+                if (item.status !== 'Cancelled') {
+                    item.status = 'Cancelled';
+                }
             });
         }
 
-        // Log general cancellation
+        const updatedOrder = await order.save();
+
+        const productNames = itemId
+            ? order.orderItems.find(i => i._id.toString() === itemId).name
+            : order.orderItems.map(item => item.name).join(', ');
+
+        const targetDescription = itemId
+            ? `Cancelled item: ${productNames} in Order #${order._id.toString().substring(18).toUpperCase()}`
+            : `Order #${order._id.toString().substring(18).toUpperCase()} was officially cancelled by ${req.user.role}.`;
+
+        // Find unique sellers for these products to tag them in the log
+        const Product = require('../models/Product');
+        const productIds = itemId
+            ? [order.orderItems.find(i => i._id.toString() === itemId).product]
+            : order.orderItems.map(i => i.product);
+
+        const orderProducts = await Product.find({ _id: { $in: productIds } });
+        const sellerIds = [...new Set(orderProducts.map(p => p.seller.toString()))];
+
+        // Log cancellation
         await Activity.create({
             userId: req.user._id,
             role: req.user.role,
             type: 'order_cancelled',
             targetType: 'Order',
             targetId: order._id,
-            description: `Order #${order._id.toString().substring(18).toUpperCase()} was officially cancelled by ${req.user.role}.`,
+            description: targetDescription,
             details: {
                 orderId: order._id,
+                itemId: itemId || null,
                 status: 'Cancelled',
                 productNames,
                 userName: req.user.name,
-                sellerIds // Used for role-based scoping in getAllActivities
+                sellerIds
             }
         });
 
@@ -521,41 +719,47 @@ const cancelOrder = async (req, res) => {
 const getSellerOrders = async (req, res) => {
     try {
         const Product = require('../models/Product');
+        const pageSize = 10;
         const page = Number(req.query.page) || 1;
-        const pageSize = 20;
 
-        // Get all products owned by this seller
-        const myProducts = await Product.find({ seller: req.user._id }).select('_id');
-        const productIds = myProducts.map(p => p._id.toString());
+        let query = {};
+        let productIds = [];
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'Admin';
 
-        if (productIds.length === 0) {
-            return res.json({ orders: [], page: 1, pages: 0, totalOrders: 0 });
+        if (!isAdmin) {
+            // Get seller's products
+            const myProducts = await Product.find({ seller: req.user._id }).select('_id');
+            productIds = myProducts.map(p => p._id.toString());
+            // Find orders that contain at least one of seller's products
+            query = { "orderItems.product": { $in: productIds } };
         }
 
-        // Find orders that contain at least one of seller's products
-        const query = { "orderItems.product": { $in: productIds } };
-
         // Optional status filter
-        if (req.query.status) {
+        if (req.query.status && req.query.status !== 'all') {
             query.status = req.query.status;
         }
 
         const count = await Order.countDocuments(query);
         const orders = await Order.find(query)
             .populate('orderItems.product')
+            .populate('user', 'name email')
             .limit(pageSize)
             .skip(pageSize * (page - 1))
             .sort({ createdAt: -1 });
 
-        // Filter order items to show only seller's products
+        // Filter order items to show only seller's products (unless Admin)
         const filteredOrders = orders.map(order => {
             const orderObj = order.toObject();
-            orderObj.orderItems = orderObj.orderItems.filter(item =>
-                productIds.includes(item.product._id.toString())
-            );
-            // Calculate seller-specific total
+
+            if (!isAdmin) {
+                orderObj.orderItems = orderObj.orderItems.filter(item =>
+                    item.product && productIds.includes(item.product._id ? item.product._id.toString() : item.product.toString())
+                );
+            }
+
+            // Calculate total for displayed items
             orderObj.sellerTotal = orderObj.orderItems.reduce((sum, item) =>
-                sum + (item.price * item.qty), 0
+                sum + (item.price * (item.qty || 1)), 0
             );
             orderObj.sellerItemCount = orderObj.orderItems.length;
             return orderObj;
@@ -580,33 +784,45 @@ const getSellerOrderDetails = async (req, res) => {
     try {
         const Product = require('../models/Product');
 
-        // Get seller's products
-        const myProducts = await Product.find({ seller: req.user._id }).select('_id');
-        const productIds = myProducts.map(p => p._id.toString());
-
         const order = await Order.findById(req.params.id)
-            .populate('orderItems.product');
+            .populate('orderItems.product')
+            .populate('user', 'name email');
 
         if (!order) {
             return res.status(404).json({ message: 'Order not found' });
         }
 
-        // Check if seller has any products in this order
-        const sellerItems = order.orderItems.filter(item =>
-            productIds.includes(item.product._id.toString())
-        );
+        let sellerItems = [];
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'Admin';
 
-        if (sellerItems.length === 0) {
-            return res.status(403).json({
-                message: 'You are not authorized to view this order'
+        if (isAdmin) {
+            // Admin sees everything
+            sellerItems = order.orderItems;
+        } else {
+            // Get seller's products
+            const myProducts = await Product.find({ seller: req.user._id }).select('_id');
+            const productIds = myProducts.map(p => p._id.toString());
+
+            // Check if seller has any products in this order
+            sellerItems = order.orderItems.filter(item => {
+                if (!item.product) return false;
+                const productId = item.product._id ? item.product._id.toString() : item.product.toString();
+                return productIds.includes(productId);
             });
+
+            if (sellerItems.length === 0) {
+                console.warn(`403 FORBIDDEN: User ${req.user._id} (Role: ${req.user.role}) attempted to view order ${req.params.id}`);
+                return res.status(403).json({
+                    message: 'You are not authorized to view this order'
+                });
+            }
         }
 
-        // Return order with only seller's items
+        // Return order with appropriate items
         const orderObj = order.toObject();
         orderObj.orderItems = sellerItems;
         orderObj.sellerTotal = sellerItems.reduce((sum, item) =>
-            sum + (item.price * item.qty), 0
+            sum + (item.price * (item.qty || item.quantity || 1)), 0
         );
         orderObj.sellerItemCount = sellerItems.length;
 

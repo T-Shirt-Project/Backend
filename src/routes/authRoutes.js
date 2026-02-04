@@ -1,84 +1,10 @@
 const express = require('express');
-const passport = require('passport');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 const User = require('../models/User');
 
-// @desc    Initiate Google OAuth
-// @route   GET /api/auth/google
-router.get('/google', (req, res, next) => {
-    // Store platform info in session for callback
-    const platform = req.query.platform || 'web';
-    const state = req.query.state || '';
+// Google OAuth routes removed
 
-    // Pass state through OAuth flow
-    passport.authenticate('google', {
-        scope: ['profile', 'email'],
-        state: JSON.stringify({ platform, customState: state })
-    })(req, res, next);
-});
-
-// @desc    Google OAuth Callback
-// @route   GET /api/auth/google/callback
-router.get('/google/callback',
-    (req, res, next) => {
-        passport.authenticate('google', {
-            session: false,
-            failureRedirect: '/login?error=oauth_failed'
-        }, async (err, user, info) => {
-            try {
-                if (err || !user) {
-                    console.error('OAuth Error:', err || 'No user returned');
-                    // Determine platform from state
-                    let platform = 'web';
-                    try {
-                        const stateData = JSON.parse(req.query.state || '{}');
-                        platform = stateData.platform || 'web';
-                    } catch (e) {
-                        // Ignore parse error
-                    }
-
-                    if (platform === 'mobile') {
-                        return res.redirect('tshirtapp://auth-error?message=Google authentication failed');
-                    }
-                    return res.redirect('/login?error=oauth_failed');
-                }
-
-                // Generate Tokens
-                const accessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '15m' });
-                const refreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET || 'refresh_secret', { expiresIn: '7d' });
-
-                // Save Refresh Token in DB
-                if (!user.refreshTokens) {
-                    user.refreshTokens = [];
-                }
-                user.refreshTokens.push(refreshToken);
-                await user.save();
-
-                // Determine redirect based on platform
-                let platform = 'web';
-                try {
-                    const stateData = JSON.parse(req.query.state || '{}');
-                    platform = stateData.platform || 'web';
-                } catch (e) {
-                    // Default to web
-                }
-
-                if (platform === 'mobile') {
-                    // Mobile deep link
-                    const deepLink = `tshirtapp://auth-success?access_token=${accessToken}&refresh_token=${refreshToken}`;
-                    return res.redirect(deepLink);
-                } else {
-                    // Web redirect - send to a success page with tokens in URL (or use postMessage)
-                    return res.redirect(`/auth-success?access_token=${accessToken}&refresh_token=${refreshToken}`);
-                }
-            } catch (error) {
-                console.error('Callback processing error:', error);
-                return res.redirect('/login?error=server_error');
-            }
-        })(req, res, next);
-    }
-);
 
 // @desc    Refresh Access Token
 // @route   POST /api/auth/refresh

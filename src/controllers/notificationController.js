@@ -1,4 +1,5 @@
 const Activity = require('../models/Activity');
+const Notification = require('../models/Notification');
 
 // @desc    Get user's notifications (Activities)
 // @route   GET /api/notifications
@@ -17,10 +18,17 @@ const getNotifications = async (req, res) => {
         } else if (req.user.role === 'admin') {
             // Admins see everything or filtered
             query = {};
-        } else {
-            // Regular users see their own
-            query.userId = req.user._id;
         }
+
+        // SEPARATE LOGIC FOR CONSUMER APP (USER)
+        if (req.user.role === 'user') {
+            const notifications = await Notification.find({ userId: req.user._id })
+                .sort({ createdAt: -1 })
+                .limit(50);
+            return res.json({ success: true, notifications });
+        }
+
+        // ADMIN / SELLER DASHBOARD LOGIC (Activity Log)
 
         const notifications = await Activity.find(query)
             .populate('userId', 'name email role')
