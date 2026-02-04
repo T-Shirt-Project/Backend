@@ -285,104 +285,87 @@ const updateOrderStatus = async (req, res) => {
             console.warn('Audit fail:', auditErr.message);
         }
 
-        // NOTIFICATION TRIGGER
+
+        // NOTIFICATION TRIGGER (Async, non-blocking)
         if (order.user) {
-            const shortId = order._id.toString().substring(18).toUpperCase();
+            // Run notification in background - don't await, don't block response
+            setImmediate(async () => {
+                try {
+                    const shortId = order._id.toString().substring(18).toUpperCase();
 
-            // Get names of updated items
-            const updatedItemNames = order.orderItems
-                .filter(item => targetItemIds.includes(item._id.toString()))
-                .map(i => i.name)
-                .join(', ');
+                    // Get names of updated items
+                    const updatedItemNames = order.orderItems
+                        .filter(item => targetItemIds.includes(item._id.toString()))
+                        .map(i => i.name)
+                        .join(', ');
 
-            let title = `Order Update`;
-            let body = `Your order #${shortId} status is now ${status}`;
+                    // Get product image from first item
+                    const firstItem = order.orderItems[0];
+                    const productImg = firstItem && firstItem.image ? firstItem.image : null;
 
-            // Specific message for Item updates (Multi-seller support)
-            if (updatedItemNames && updatedCount < order.orderItems.length) {
-                body = `Update for ${updatedItemNames}: Status is now ${status}`;
-            }
+                    let title = `Order Update`;
+                    let body = `Your order #${shortId} status is now ${status}`;
 
-            switch (status) {
-                case 'Processing':
-                    title = 'Order Processing ⚙️';
-                    if (!updatedItemNames) body = `Your order #${shortId} is now being processed.`;
-                    break;
-                case 'Shipped':
-                    title = 'Order Shipped 🚚';
-                    if (!updatedItemNames) body = `Your order #${shortId} has been shipped!`;
-                    else body = `Your item(s) (${updatedItemNames}) have been shipped 🚚`;
-                    break;
-                case 'Out for Delivery':
-                    title = 'Out for Delivery 📦';
-                    if (!updatedItemNames) body = `Get ready! Your order #${shortId} is out for delivery.`;
-                    else body = `Your item(s) (${updatedItemNames}) are out for delivery 📦`;
-                    break;
-                case 'Delivered':
-                    title = 'Delivered 🎉';
-                    if (!updatedItemNames) body = `Your order #${shortId} has been delivered. Enjoy!`;
-                    else body = `Your item(s) (${updatedItemNames}) have been delivered 🎉`;
-                    break;
-                case 'Cancelled':
-                    title = 'Order Cancelled ❌';
-                    body = `Your order #${shortId} has been cancelled.`;
-                    break;
-            }
+                    // Specific message for Item updates (Multi-seller support)
+                    if (updatedItemNames && updatedCount < order.orderItems.length) {
+                        body = `Update for ${updatedItemNames}: Status is now ${status}`;
+                    }
 
-            // Only notify if status actually changed or items updated
-            // We already filtered for "updatedCount > 0" or status change earlier
-            await notifyUser(
-                order.user,
-                title,
-                body,
-                'order_update',
-                { orderId: order._id, status: status }
-            );
+                    switch (status) {
+                        case 'Processing':
+                            title = 'Order Processing ⚙️';
+                            body = updatedItemNames
+                                ? `We are processing your item(s): ${updatedItemNames}`
+                                : `Your order #${shortId} is now being processed.`;
+                            break;
+                        case 'Shipped':
+                            title = 'Order Shipped 🚚';
+                            body = updatedItemNames
+                                ? `Your item(s) (${updatedItemNames}) have been shipped 🚚`
+                                : `Your order #${shortId} has been shipped!`;
+                            break;
+                        case 'Out for Delivery':
+                            title = 'Out for Delivery 📦';
+                            body = updatedItemNames
+                                ? `Your item(s) (${updatedItemNames}) are out for delivery 📦`
+                                : `Get ready! Your order #${shortId} is out for delivery.`;
+                            break;
+                        case 'Delivered':
+                            title = 'Delivered 🎉';
+                            body = updatedItemNames
+                                ? `Your item(s) (${updatedItemNames}) have been delivered 🎉`
+                                : `Your order #${shortId} has been delivered. Enjoy!`;
+                            break;
+                        case 'Cancelled':
+                            title = 'Order Cancelled ❌';
+                            body = `Your order #${shortId} has been cancelled.`;
+                            break;
+                    }
+
+                    // Send notification (async, won't block)
+                    await notificationService.sendToUser(
+                        order.user._id || order.user,
+                        title,
+                        body,
+                        'order_update',
+                        { orderId: order._id.toString(), status },
+                        productImg
+                    );
+                } catch (notifError) {
+                    console.error('⚠️ Notification send failed (non-blocking):', notifError.message);
+                }
+            });
         }
 
-        // NOTIFICATIONS: Status Updates
-        const firstItem = order.orderItems[0];
-        const productName = firstItem ? firstItem.name : 'Your Order';
-
-        // Image URL logic (use first item's image)
-        // Accessing populated product from findById above
-        const productImg = firstItem && firstItem.product && firstItem.product.images && firstItem.product.images.length > 0
-            ? firstItem.product.images[0]
-            : null;
-
-        let title = `Order Update`;
-        let body = `Your order status has changed to ${status}`;
-
-        if (status === 'Processing') {
-            title = 'Order Processing 🛠️';
-            body = `We are processing your order for ${productName}.`;
-        } else if (status === 'Shipped') {
-            title = 'Order Shipped 🚚';
-            body = `Good news! Your order for ${productName} has been shipped.`;
-        } else if (status === 'Out for Delivery') {
-            title = 'Out for Delivery 🚀';
-            body = `Your order is out for delivery. Get ready!`;
-        } else if (status === 'Delivered') {
-            title = 'Order Delivered 🎉';
-            body = `Your order has been delivered. Enjoy your purchase!`;
-        } else if (status === 'Cancelled') {
-            title = 'Order Cancelled ❌';
-            body = `Your order #${order._id.toString().substring(18).toUpperCase()} has been cancelled.`;
-        }
-
-        notificationService.sendToUser(
-            order.user._id, // Ensure .user is populated or ID is preserved
-            title,
-            body,
-            'order_update',
-            { orderId: order._id.toString(), status },
-            productImg
-        );
-
-        res.json(updatedOrder);
+        // Return success immediately (don't wait for notification)
+        res.json({
+            message: 'Order status updated successfully',
+            order: updatedOrder,
+            updatedItemsCount: updatedCount
+        });
     } catch (error) {
-        console.error('Update Status Error:', error);
-        res.status(500).json({ message: 'Internal server error during status sync' });
+        console.error('❌ Update order status error:', error);
+        res.status(500).json({ message: error.message || 'Failed to update order status' });
     }
 };
 
