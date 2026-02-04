@@ -570,4 +570,27 @@ const logoutUser = async (req, res) => {
     res.json({ message: 'Logged out successfully' });
 };
 
-module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, verifyEmail, requestOtp, verifyOtp };
+// @desc Update FCM Token for Push Notifications
+// @route PUT /api/users/push-token
+const updateFcmToken = async (req, res) => {
+    try {
+        const { fcmToken } = req.body;
+        if (!fcmToken) {
+            return res.status(400).json({ message: 'Missing FCM token' });
+        }
+
+        const user = await User.findById(req.user._id);
+        if (user) {
+            user.fcmToken = fcmToken;
+            await user.save();
+            res.json({ message: 'FCM Token updated' });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        console.error('Update FCM Token Error:', error);
+        res.status(500).json({ message: 'Failed to update token' });
+    }
+};
+
+module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, verifyEmail, requestOtp, verifyOtp, updateFcmToken };

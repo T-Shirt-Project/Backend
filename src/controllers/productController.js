@@ -138,6 +138,8 @@ const getProductById = async (req, res) => {
     }
 };
 
+const notificationService = require('../services/notificationService');
+
 // @desc Create a product (Seller/Admin)
 // @route POST /api/products
 const createProduct = async (req, res) => {
@@ -173,6 +175,15 @@ const createProduct = async (req, res) => {
         }
     });
 
+    // Send Notification (Async)
+    notificationService.sendToAll(
+        'New Arrival 👕',
+        `Check out our new ${name} just for you!`,
+        'product',
+        { productId: createdProduct._id.toString() },
+        createdProduct.images.length > 0 ? createdProduct.images[0] : null
+    );
+
     res.status(201).json(createdProduct);
 };
 
@@ -198,6 +209,7 @@ const updateProduct = async (req, res) => {
         };
 
         product.name = name || product.name;
+        const oldPrice = product.price;
         product.price = price !== undefined ? price : product.price;
         product.description = description || product.description;
         product.category = category || product.category;
@@ -230,6 +242,17 @@ const updateProduct = async (req, res) => {
                 changes: Object.keys(changes).length > 0 ? changes : 'No semantic changes'
             }
         });
+
+        // NOTIFICATION: Price Drop Logic
+        if (price !== undefined && price < oldPrice) {
+            notificationService.sendToAll(
+                'Price Drop Alert! 🔥',
+                `${product.name} is now available for just ₹${price}!`,
+                'promotion',
+                { productId: product._id.toString() },
+                product.images.length > 0 ? product.images[0] : null
+            );
+        }
 
         res.json(updatedProduct);
     } else {

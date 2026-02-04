@@ -1,5 +1,6 @@
 const Order = require('../models/Order');
 const Activity = require('../models/Activity');
+const notificationService = require('../services/notificationService');
 
 // @desc Create new order
 // @route POST /api/orders
@@ -65,6 +66,15 @@ const addOrderItems = async (req, res) => {
                 sellerIds: sellerIds // Critical: Allows sellers to see this activity
             }
         });
+
+        // NOTIFICATION: Order Placed
+        notificationService.sendToUser(
+            req.user._id,
+            'Order Placed 📦',
+            `Your order for ${productNames} has been placed successfully!`,
+            'order_update',
+            { orderId: createdOrder._id.toString() }
+        );
 
         res.status(201).json(createdOrder);
     }
@@ -247,6 +257,45 @@ const updateOrderStatus = async (req, res) => {
             console.error('Audit log failed, but order updated:', auditErr);
             // Non-blocking error
         }
+
+        // NOTIFICATIONS: Status Updates
+        const firstItem = order.orderItems[0];
+        const productName = firstItem ? firstItem.name : 'Your Order';
+
+        // Image URL logic (use first item's image)
+        // Accessing populated product from findById above
+        const productImg = firstItem && firstItem.product && firstItem.product.images && firstItem.product.images.length > 0
+            ? firstItem.product.images[0]
+            : null;
+
+        let title = `Order Update`;
+        let body = `Your order status has changed to ${status}`;
+
+        if (status === 'Processing') {
+            title = 'Order Processing 🛠️';
+            body = `We are processing your order for ${productName}.`;
+        } else if (status === 'Shipped') {
+            title = 'Order Shipped 🚚';
+            body = `Good news! Your order for ${productName} has been shipped.`;
+        } else if (status === 'Out for Delivery') {
+            title = 'Out for Delivery 🚀';
+            body = `Your order is out for delivery. Get ready!`;
+        } else if (status === 'Delivered') {
+            title = 'Order Delivered 🎉';
+            body = `Your order has been delivered. Enjoy your purchase!`;
+        } else if (status === 'Cancelled') {
+            title = 'Order Cancelled ❌';
+            body = `Your order #${order._id.toString().substring(18).toUpperCase()} has been cancelled.`;
+        }
+
+        notificationService.sendToUser(
+            order.user._id, // Ensure .user is populated or ID is preserved
+            title,
+            body,
+            'order_update',
+            { orderId: order._id.toString(), status },
+            productImg
+        );
 
         res.json(updatedOrder);
     } catch (error) {
