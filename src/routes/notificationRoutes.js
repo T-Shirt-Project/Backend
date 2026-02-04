@@ -128,9 +128,9 @@ router.delete('/:id', protect, async (req, res) => {
 });
 
 // @desc Clear all notifications
-// @route DELETE /api/notifications/clear-all
+// @route POST /api/notifications/clear-all
 // @access Private
-router.delete('/clear-all', protect, async (req, res) => {
+router.post('/clear-all', protect, async (req, res) => {
     try {
         await Notification.deleteMany({
             $or: [
