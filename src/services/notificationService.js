@@ -69,7 +69,7 @@ exports.sendToUser = async (userId, title, body, type, data = {}, imageUrl = nul
                     notification: {
                         title,
                         body,
-                        ...(imageUrl && { imageUrl: imageUrl })
+                        ...(imageUrl && { image: imageUrl })
                     },
                     data: stringData,
                     android: {
@@ -77,17 +77,16 @@ exports.sendToUser = async (userId, title, body, type, data = {}, imageUrl = nul
                         notification: {
                             channelId: 'high_importance_channel',
                             priority: 'high',
-                            defaultSound: true,
-                            defaultVibrateTimings: true,
-                            ...(imageUrl && { imageUrl: imageUrl })
+                            sound: 'custom_sound',
+                            ...(imageUrl && { image: imageUrl })
                         }
                     },
                     apns: {
                         payload: {
                             aps: {
-                                sound: 'default',
+                                sound: 'custom_sound.wav',
                                 contentAvailable: true,
-                                badge: 1 // App should handle incrementing if possible, but backend sends 1 to show tray
+                                badge: 1
                             }
                         },
                         fcmOptions: {
@@ -128,10 +127,7 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
     try {
         const typeUpper = type ? type.toUpperCase() : 'SYSTEM';
 
-        // Save to DB (Global Record if needed, or just let users fetch via topic?)
-        // Usually global notifications are handled by topic, but if we want it in in-app center,
-        // we might needs a 'GlobalNotification' record or just BROADCAST to all users (expensive).
-        // Let's create a global notification record.
+        // Save to DB
         await Notification.create({
             isGlobal: true,
             title,
@@ -143,7 +139,7 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
             deleted: false
         });
 
-        // Convert data object values to strings (FCM requirement)
+        // Convert data object values to strings
         const stringData = {
             type: typeUpper,
             ...Object.keys(data).reduce((acc, key) => {
@@ -156,7 +152,7 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
             notification: {
                 title,
                 body,
-                ...(imageUrl && { imageUrl: imageUrl })
+                ...(imageUrl && { image: imageUrl })
             },
             data: stringData,
             android: {
@@ -164,8 +160,20 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
                 notification: {
                     channelId: 'high_importance_channel',
                     priority: 'high',
-                    sound: 'default',
-                    ...(imageUrl && { imageUrl: imageUrl })
+                    sound: 'custom_sound',
+                    ...(imageUrl && { image: imageUrl })
+                }
+            },
+            apns: {
+                payload: {
+                    aps: {
+                        sound: 'custom_sound.wav',
+                        contentAvailable: true,
+                        badge: 1
+                    }
+                },
+                fcmOptions: {
+                    ...(imageUrl && { image: imageUrl })
                 }
             },
             topic: 'all_users'
