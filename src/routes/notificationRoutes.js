@@ -12,16 +12,16 @@ router.get('/', protect, async (req, res) => {
             $or: [
                 { userId: req.user._id },
                 { isGlobal: true }
-            ]
+            ],
+            deleted: false // Always filter out deleted
         })
             .sort({ createdAt: -1 })
             .limit(50);
 
         const unreadCount = await Notification.countDocuments({
-            $or: [
-                { userId: req.user._id, isRead: false },
-                { isGlobal: true, isRead: false }
-            ]
+            userId: req.user._id,
+            read: false,
+            deleted: false
         });
 
         res.json({
@@ -40,10 +40,9 @@ router.get('/', protect, async (req, res) => {
 router.get('/unread-count', protect, async (req, res) => {
     try {
         const unreadCount = await Notification.countDocuments({
-            $or: [
-                { userId: req.user._id, isRead: false },
-                { isGlobal: true, isRead: false }
-            ]
+            userId: req.user._id,
+            read: false,
+            deleted: false
         });
 
         res.json({ unreadCount });
@@ -58,18 +57,16 @@ router.get('/unread-count', protect, async (req, res) => {
 // @access Private
 router.put('/:id/read', protect, async (req, res) => {
     try {
-        const notification = await Notification.findById(req.params.id);
+        const notification = await Notification.findOne({
+            _id: req.params.id,
+            userId: req.user._id
+        });
 
         if (!notification) {
             return res.status(404).json({ message: 'Notification not found' });
         }
 
-        // Check if user owns this notification or it's global
-        if (!notification.isGlobal && notification.userId.toString() !== req.user._id.toString()) {
-            return res.status(401).json({ message: 'Not authorized' });
-        }
-
-        notification.isRead = true;
+        notification.read = true;
         await notification.save();
 
         res.json({ message: 'Notification marked as read' });
@@ -86,13 +83,11 @@ router.put('/read-all', protect, async (req, res) => {
     try {
         await Notification.updateMany(
             {
-                $or: [
-                    { userId: req.user._id },
-                    { isGlobal: true }
-                ],
-                isRead: false
+                userId: req.user._id,
+                read: false,
+                deleted: false
             },
-            { isRead: true }
+            { read: true }
         );
 
         res.json({ message: 'All notifications marked as read' });
@@ -102,23 +97,22 @@ router.put('/read-all', protect, async (req, res) => {
     }
 });
 
-// @desc Delete notification
+// @desc Delete notification (Soft Delete)
 // @route DELETE /api/notifications/:id
 // @access Private
 router.delete('/:id', protect, async (req, res) => {
     try {
-        const notification = await Notification.findById(req.params.id);
+        const notification = await Notification.findOne({
+            _id: req.params.id,
+            userId: req.user._id
+        });
 
         if (!notification) {
             return res.status(404).json({ message: 'Notification not found' });
         }
 
-        // Check if user owns this notification or it's global
-        if (!notification.isGlobal && notification.userId.toString() !== req.user._id.toString()) {
-            return res.status(401).json({ message: 'Not authorized' });
-        }
-
-        await notification.deleteOne();
+        notification.deleted = true;
+        await notification.save();
 
         res.json({ message: 'Notification deleted' });
     } catch (error) {
@@ -127,17 +121,15 @@ router.delete('/:id', protect, async (req, res) => {
     }
 });
 
-// @desc Clear all notifications
+// @desc Clear all notifications (Soft Delete)
 // @route POST /api/notifications/clear-all
 // @access Private
 router.post('/clear-all', protect, async (req, res) => {
     try {
-        await Notification.deleteMany({
-            $or: [
-                { userId: req.user._id },
-                { isGlobal: true }
-            ]
-        });
+        await Notification.updateMany(
+            { userId: req.user._id },
+            { deleted: true }
+        );
 
         res.json({ message: 'All notifications cleared' });
     } catch (error) {
@@ -147,3 +139,4 @@ router.post('/clear-all', protect, async (req, res) => {
 });
 
 module.exports = router;
+

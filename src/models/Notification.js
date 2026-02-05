@@ -19,28 +19,54 @@ const notificationSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    imageUrl: {
+        type: String,
+        default: null
+    },
     type: {
         type: String,
-        enum: ['order_update', 'promotion', 'product', 'system'],
-        default: 'system'
+        enum: ['ORDER', 'PRODUCT', 'OFFER', 'SYSTEM', 'order_update', 'promotion'], // keeping old ones for compatibility during migration if any
+        default: 'SYSTEM'
     },
-    data: { // Flexible payload for navigation (productId, orderId, etc)
+    referenceId: { // productId or orderId
+        type: String,
+        default: null,
+        index: true
+    },
+    data: { // Flexible payload for navigation
         type: Map,
         of: String,
         default: {}
     },
-    isRead: {
+    read: {
         type: Boolean,
         default: false
+    },
+    deleted: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    status: { // For duplicate prevention status checking
+        type: String,
+        default: null
     },
     createdAt: {
         type: Date,
         default: Date.now,
-        index: true // For sorting
+        index: true
     }
 }, { timestamps: true });
 
+// CRITICAL: Unique constraint for duplicate prevention
+// (userId + type + referenceId + status/subType)
+notificationSchema.index({ userId: 1, type: 1, referenceId: 1, status: 1 }, {
+    unique: true,
+    partialFilterExpression: { status: { $type: "string" }, userId: { $exists: true } }
+});
+
 // Index for valid sorting and filtering
-notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index({ userId: 1, deleted: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Notification', notificationSchema);
+

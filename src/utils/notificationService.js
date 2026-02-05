@@ -7,52 +7,85 @@ const { sendToToken, sendToTopic } = require('./fcm');
  * @param {string} userId - User ID
  * @param {string} title - Notification Title
  * @param {string} body - Notification Body
- * @param {string} type - 'order_update', 'promotion', 'system'
- * @param {object} data - Metadata (e.g. { orderId: '123' })
+ * @param {string} type - 'ORDER', 'PRODUCT', 'OFFER', 'SYSTEM'
+ * @param {object} data - Metadata (e.g. { referenceId: '123', imageUrl: '...' })
+ * @param {string} status - Optional status for duplicate prevention (e.g. 'SHIPPED')
  */
-const notifyUser = async (userId, title, body, type, data = {}) => {
+const notifyUser = async (userId, title, body, type, data = {}, status = null) => {
     try {
-        // 1. Create DB Log
+        const referenceId = data.referenceId || null;
+        const imageUrl = data.imageUrl || null;
+
+        // 1. DUPLICATE PREVENTION: Check if already exists
+        // (userId + type + referenceId + status)
+        if (status) {
+            const existing = await Notification.findOne({
+                userId,
+                type,
+                referenceId,
+                status,
+                deleted: false
+            });
+            if (existing) {
+                console.log(`Duplicate notification skipped: ${type} - ${status} for user ${userId}`);
+                return existing;
+            }
+        }
+
+        // 2. Create DB Log
         const notification = await Notification.create({
             userId,
             title,
             body,
             type,
-            referenceId: data.referenceId || null
+            referenceId,
+            imageUrl,
+            status,
+            data
         });
 
-        // 2. Fetch User FCM Token
-        const user = await User.findById(userId);
-        if (user && user.fcmToken) {
-            // 3. Send Push
-            await sendToToken(user.fcmToken, title, body, { ...data, type });
-        } else {
-            // Log that user has no token?
-            // console.log(`User ${userId} has no FCM token`);
-        }
+        // 3. Send Push ASYNC (Do not wait for it to return to speed up API)
+        // We use a self-invoking function or just don't await the inner logic if we want to be truly async-non-blocking.
+        // But for better error handling/logging, we can wrap it.
+        (async () => {
+            try {
+                const user = await User.findById(userId);
+                if (user && user.fcmToken) {
+                    const result = await sendToToken(user.fcmToken, title, body, { ...data, type, notificationId: notification._id.toString() }, imageUrl);
+
+                    if (result && result.invalidToken) {
+                        console.log(`Removing invalid FCM token for user ${userId}`);
+                        await User.findByIdAndUpdate(userId, { fcmToken: null });
+                    }
+                }
+            } catch (pushError) {
+                console.error('Push Send Background Error:', pushError);
+            }
+        })();
 
         return notification;
     } catch (error) {
+        // Handle unique constraint error (race condition)
+        if (error.code === 11000) {
+            console.log('Notification unique constraint hit - skipping duplicate');
+            return null;
+        }
         console.error('NotifyUser Error:', error);
-        // Do not throw, return null to prevent blocking flow
         return null;
     }
 };
 
 /**
  * Broadcast to all users (subscribed to 'promotions' topic)
- * @param {string} title 
- * @param {string} body 
- * @param {object} data 
  */
 const broadcastPromotion = async (title, body, data = {}) => {
     try {
-        // We do NOT log individual notifications for every user in DB to avoid write flood.
-        // If needed, we could have a 'SystemNotification' collection, but for now we skip DB logs per user.
-        // Or we assume the user just sees it in status bar.
+        const imageUrl = data.imageUrl || null;
+        const type = 'PRODUCT'; // or 'OFFER'
 
-        // Use Firebase Topics
-        await sendToTopic('promotions', title, body, { ...data, type: 'promotion' });
+        // Send to Firebase Topic
+        // The mobile app should subscribe to 'all_users' or 'promotions' topic
+        await sendToTopic('all_users', title, body, { ...data, type }, imageUrl);
 
         return true;
     } catch (error) {
@@ -65,3 +98,4 @@ module.exports = {
     notifyUser,
     broadcastPromotion
 };
+

@@ -2,7 +2,8 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Comment = require('../models/Comment');
 const Activity = require('../models/Activity');
-const { broadcastPromotion } = require('../utils/notificationService');
+const notificationService = require('../services/notificationService');
+
 
 // @desc Fetch all products
 // @route GET /api/products
@@ -225,10 +226,11 @@ const createProduct = async (req, res) => {
         notificationService.sendToAll(
             'New Arrival 👕',
             `Check out our new ${name} just for you!`,
-            'product',
+            'PRODUCT',
             { productId: createdProduct._id.toString() },
             createdProduct.images.length > 0 ? createdProduct.images[0] : null
         );
+
 
         res.status(201).json(createdProduct);
     } catch (error) {
@@ -298,11 +300,12 @@ const updateProduct = async (req, res) => {
                 notificationService.sendToAll(
                     'Price Drop Alert! 🔥',
                     `${product.name} is now available for just ₹${price}!`,
-                    'promotion',
+                    'OFFER',
                     { productId: product._id.toString() },
                     product.images.length > 0 ? product.images[0] : null
                 );
             }
+
 
             res.json(updatedProduct);
         } else {

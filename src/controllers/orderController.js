@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const Activity = require('../models/Activity');
 const notificationService = require('../services/notificationService');
 
+
 // @desc Create new order
 // @route POST /api/orders
 const addOrderItems = async (req, res) => {
@@ -79,9 +80,12 @@ const addOrderItems = async (req, res) => {
             req.user._id,
             'Order Placed 📦',
             `Your order for ${productNames} has been placed successfully!`,
-            'order_update',
-            { orderId: createdOrder._id.toString() }
+            'ORDER',
+            { orderId: createdOrder._id.toString() },
+            createdOrder.orderItems[0]?.image || null,
+            'Placed'
         );
+
 
         res.status(201).json(createdOrder);
     }
@@ -347,10 +351,12 @@ const updateOrderStatus = async (req, res) => {
                         order.user._id || order.user,
                         title,
                         body,
-                        'order_update',
+                        'ORDER',
                         { orderId: order._id.toString(), status },
-                        productImg
+                        productImg,
+                        status
                     );
+
                 } catch (notifError) {
                     console.error('⚠️ Notification send failed (non-blocking):', notifError.message);
                 }
