@@ -23,8 +23,7 @@ exports.sendToUser = async (userId, title, body, type, data = {}, imageUrl = nul
                 userId,
                 type: type.toUpperCase(),
                 referenceId,
-                status,
-                deleted: false
+                status
             });
             if (existing) {
                 console.log(`Duplicate notification skipped: ${type} - ${status} for user ${userId}`);
@@ -127,21 +126,40 @@ exports.sendToAll = async (title, body, type, data = {}, imageUrl = null) => {
     try {
         const typeUpper = type ? type.toUpperCase() : 'SYSTEM';
 
-        // Save to DB
-        await Notification.create({
-            isGlobal: true,
-            title,
-            body,
-            imageUrl,
-            type: typeUpper,
-            data,
-            read: false,
-            deleted: false
-        });
+        // 1. Create DB Log for EACH user to support individual clearing
+        const users = await User.find({ role: 'user' }, '_id');
 
-        // Convert data object values to strings
+        if (users.length > 0) {
+            const notifications = users.map(user => ({
+                userId: user._id,
+                title,
+                body,
+                imageUrl,
+                type: typeUpper,
+                data,
+                read: false,
+                deleted: false
+            }));
+            await Notification.insertMany(notifications);
+            console.log(`✅ Created individual notifications for ${users.length} users`);
+        } else {
+            // Fallback for global if no users (should not happen in prod)
+            await Notification.create({
+                isGlobal: true,
+                title,
+                body,
+                imageUrl,
+                type: typeUpper,
+                data,
+                read: false,
+                deleted: false
+            });
+        }
+
+        // 2. Prepare FCM Data (Must be strings)
         const stringData = {
             type: typeUpper,
+            productId: data.productId ? String(data.productId) : '',
             ...Object.keys(data).reduce((acc, key) => {
                 acc[key] = String(data[key]);
                 return acc;

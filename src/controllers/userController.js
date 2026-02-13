@@ -55,7 +55,8 @@ const authUser = async (req, res) => {
                     status: user.status,
                     phoneNumber: user.phoneNumber,
                     token: generateToken(user._id),
-                    addresses: user.addresses
+                    addresses: user.addresses,
+                    mobileAccessEnabled: user.mobileAccessEnabled
                 });
             } else {
                 console.log('Login Failed: Incorrect password for', email);
@@ -125,7 +126,8 @@ const registerUser = async (req, res) => {
                 email: user.email,
                 role: user.role,
                 token: generateToken(user._id),
-                message: 'Registration successful.'
+                message: 'Registration successful.',
+                mobileAccessEnabled: user.mobileAccessEnabled
             });
         } else {
             console.log('Registration Failed: Invalid user data');
@@ -151,7 +153,8 @@ const getUserProfile = async (req, res) => {
             role: user.role,
             status: user.status,
             phoneNumber: user.phoneNumber,
-            addresses: user.addresses
+            addresses: user.addresses,
+            mobileAccessEnabled: user.mobileAccessEnabled
         });
     } else {
         res.status(404).json({ message: 'User not found' });
@@ -191,6 +194,7 @@ const updateUserProfile = async (req, res) => {
             phoneNumber: updatedUser.phoneNumber,
             role: updatedUser.role,
             token: generateToken(updatedUser._id),
+            mobileAccessEnabled: updatedUser.mobileAccessEnabled,
         });
     } else {
         res.status(404).json({ message: 'User not found' });
@@ -253,70 +257,132 @@ const getUsers = async (req, res) => {
 // IMPORTANT: This is a SOFT DELETE to preserve order history
 // Orders contain userSnapshot and remain intact after user deletion
 const deleteUser = async (req, res) => {
-    const user = await User.findById(req.params.id);
+    try {
+        console.log('=== DELETE USER REQUEST ===');
+        console.log('Admin User:', req.user?.email, 'Role:', req.user?.role);
+        console.log('Target User ID:', req.params.id);
 
-    if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Prevent deletion of admin accounts
-    if (user.role === 'admin') {
-        return res.status(403).json({ message: 'Cannot delete admin accounts' });
-    }
-
-    // SOFT DELETE: Mark user as deleted instead of removing from database
-    // This preserves data integrity for:
-    // - Order history (userSnapshot remains valid)
-    // - Audit trails
-    // - Legal compliance
-    user.status = 'deleted';
-    user.email = `deleted_${Date.now()}_${user.email}`; // Prevent email conflicts
-    await user.save();
-
-    // Log activity
-    await Activity.create({
-        userId: req.user._id,
-        role: req.user.role,
-        type: 'user_deleted',
-        targetType: 'User',
-        targetId: user._id,
-        description: `Admin deleted user account: ${user.name}`,
-        details: {
-            deletedUserId: user._id,
-            deletedUserName: user.name,
-            deletedUserRole: user.role,
-            adminId: req.user._id,
-            timestamp: new Date()
+        // Validate ObjectId
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            console.log('❌ Invalid ObjectId format');
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid user ID format'
+            });
         }
-    });
 
-    res.json({
-        message: 'User account deleted successfully',
-        note: 'Order history preserved'
-    });
+        const user = await User.findById(req.params.id);
+
+        if (!user) {
+            console.log('❌ User not found');
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        console.log('Target User:', user.email, 'Role:', user.role);
+
+        // Prevent deletion of admin accounts
+        if (user.role === 'admin') {
+            console.log('❌ Cannot delete admin account');
+            return res.status(403).json({
+                success: false,
+                message: 'Cannot delete admin accounts'
+            });
+        }
+
+        // SOFT DELETE: Mark user as deleted instead of removing from database
+        // This preserves data integrity for:
+        // - Order history (userSnapshot remains valid)
+        // - Audit trails
+        // - Legal compliance
+        user.status = 'deleted';
+        user.email = `deleted_${Date.now()}_${user.email}`; // Prevent email conflicts
+        await user.save();
+
+        console.log('✅ User soft deleted successfully');
+
+        // Log activity
+        await Activity.create({
+            userId: req.user._id,
+            role: req.user.role,
+            type: 'user_deleted',
+            targetType: 'User',
+            targetId: user._id,
+            description: `Admin deleted user account: ${user.name}`,
+            details: {
+                deletedUserId: user._id,
+                deletedUserName: user.name,
+                deletedUserRole: user.role,
+                adminId: req.user._id,
+                timestamp: new Date()
+            }
+        });
+
+        res.json({
+            success: true,
+            message: 'User account deleted successfully',
+            note: 'Order history preserved'
+        });
+    } catch (error) {
+        console.error('❌ DELETE USER ERROR:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to delete user',
+            error: error.message
+        });
+    }
 };
 
 // @desc Update user (Admin)
 // @route PUT /api/users/:id
 const updateUser = async (req, res) => {
-    // Validate ObjectId
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-        return res.status(400).json({ message: 'Invalid user ID format' });
-    }
+    try {
+        console.log('=== UPDATE USER REQUEST ===');
+        console.log('Admin User:', req.user?.email, 'Role:', req.user?.role);
+        console.log('Target User ID:', req.params.id);
+        console.log('Update Data:', req.body);
 
-    const user = await User.findById(req.params.id);
+        // Validate ObjectId
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            console.log('❌ Invalid ObjectId format');
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid user ID format'
+            });
+        }
 
-    if (user) {
+        const user = await User.findById(req.params.id);
+
+        if (!user) {
+            console.log('❌ User not found');
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        console.log('Target User:', user.email, 'Role:', user.role);
+
         // Prevent self-modification of strict fields by Admin
         if (req.user._id.toString() === user._id.toString()) {
             if (req.body.status) {
                 const normalizedStatus = req.body.status.toLowerCase().trim();
                 if (normalizedStatus !== 'active') {
-                    return res.status(400).json({ message: 'You cannot disable or suspend your own account.' });
+                    console.log('❌ Admin tried to self-disable/suspend');
+                    return res.status(400).json({
+                        success: false,
+                        message: 'You cannot disable or suspend your own account.'
+                    });
                 }
             }
             if (req.body.role && req.body.role !== 'admin') {
-                return res.status(400).json({ message: 'You cannot demote your own admin privileges.' });
+                console.log('❌ Admin tried to demote self');
+                return res.status(400).json({
+                    success: false,
+                    message: 'You cannot demote your own admin privileges.'
+                });
             }
         }
 
@@ -341,12 +407,26 @@ const updateUser = async (req, res) => {
             const normalizedStatus = req.body.status.toLowerCase().trim();
             if (['active', 'disabled', 'suspended'].includes(normalizedStatus)) {
                 user.status = normalizedStatus;
+            } else if (normalizedStatus === 'deleted') {
+                // Handle soft delete if passed via status
+                user.status = 'deleted';
+                user.email = `deleted_${Date.now()}_${user.email}`;
             } else {
-                return res.status(400).json({ message: 'Invalid status value' });
+                console.log('❌ Invalid status value:', req.body.status);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid status value'
+                });
             }
         }
 
+        // Mobile Access Enforcement
+        if (req.body.mobileAccessEnabled !== undefined) {
+            user.mobileAccessEnabled = req.body.mobileAccessEnabled;
+        }
+
         const updatedUser = await user.save();
+        console.log('✅ User updated successfully');
 
         // Log status changes
         if (oldStatus !== updatedUser.status) {
@@ -383,15 +463,24 @@ const updateUser = async (req, res) => {
         }
 
         res.json({
-            _id: updatedUser._id,
-            name: updatedUser.name,
-            email: updatedUser.email,
-            role: updatedUser.role,
-            status: updatedUser.status,
-            message: message
+            success: true,
+            message: message,
+            user: {
+                _id: updatedUser._id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                role: updatedUser.role,
+                status: updatedUser.status,
+                mobileAccessEnabled: updatedUser.mobileAccessEnabled
+            }
         });
-    } else {
-        res.status(404).json({ message: 'User not found' });
+    } catch (error) {
+        console.error('❌ UPDATE USER ERROR:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update user',
+            error: error.message
+        });
     }
 };
 
@@ -414,7 +503,7 @@ const logoutUser = async (req, res) => {
         }
 
     }
-    res.json({ message: 'Logged out successfully' });
+    res.json({ success: true, message: 'Logged out successfully' });
 };
 
 
@@ -425,7 +514,7 @@ const updateFcmToken = async (req, res) => {
     try {
         const { fcmToken } = req.body;
         if (!fcmToken) {
-            return res.status(400).json({ message: 'FCM Token is required' });
+            return res.status(400).json({ success: false, message: 'FCM Token is required' });
         }
 
         const user = await User.findById(req.user._id);
@@ -434,13 +523,141 @@ const updateFcmToken = async (req, res) => {
             await user.save();
             res.json({ success: true, message: 'FCM Token updated successfully' });
         } else {
-            res.status(404).json({ message: 'User not found' });
+            res.status(404).json({ success: false, message: 'User not found' });
         }
     } catch (error) {
         console.error('Update FCM Token Error:', error);
-        res.status(500).json({ message: 'Server Error' });
+        res.status(500).json({ success: false, message: 'Server Error' });
     }
 };
 
-module.exports = { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken };
+// @desc Update user status (Admin)
+// @route PATCH /api/users/:id/status
+// @access Admin only
+const updateUserStatus = async (req, res) => {
+    try {
+        console.log('=== UPDATE USER STATUS REQUEST ===');
+        console.log('Admin User:', req.user?.email, 'Role:', req.user?.role);
+        console.log('Target User ID:', req.params.id);
+        console.log('New Status:', req.body.status);
+
+        // Validate ObjectId
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            console.log('❌ Invalid ObjectId format');
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid user ID format'
+            });
+        }
+
+        const { status } = req.body;
+
+        // Validate status value
+        const validStatuses = ['active', 'disabled', 'suspended'];
+        if (!status || !validStatuses.includes(status.toLowerCase().trim())) {
+            console.log('❌ Invalid status value:', status);
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid status value. Must be: active, disabled, or suspended'
+            });
+        }
+
+        const user = await User.findById(req.params.id);
+
+        if (!user) {
+            console.log('❌ User not found');
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        console.log('Target User:', user.email, 'Role:', user.role);
+
+        // Prevent admin from disabling/suspending themselves
+        if (req.user._id.toString() === user._id.toString()) {
+            const normalizedStatus = status.toLowerCase().trim();
+            if (normalizedStatus !== 'active') {
+                console.log('❌ Admin tried to self-disable/suspend');
+                return res.status(400).json({
+                    success: false,
+                    message: 'You cannot disable or suspend your own account.'
+                });
+            }
+        }
+
+        // Prevent modifying other admin accounts (optional security measure)
+        if (user.role === 'admin' && req.user._id.toString() !== user._id.toString()) {
+            console.log('❌ Admin tried to modify another admin');
+            return res.status(403).json({
+                success: false,
+                message: 'Cannot modify status of other admin accounts'
+            });
+        }
+
+        const oldStatus = user.status;
+        const normalizedStatus = status.toLowerCase().trim();
+
+        // Update status
+        user.status = normalizedStatus;
+        const updatedUser = await user.save();
+        console.log('✅ User status updated successfully');
+
+        // Log activity
+        await Activity.create({
+            userId: req.user._id,
+            role: req.user.role,
+            type: 'status_change',
+            targetType: 'User',
+            targetId: user._id,
+            description: `Changed status of ${user.name} from ${oldStatus} to ${normalizedStatus}`,
+            details: {
+                from: oldStatus,
+                to: normalizedStatus,
+                adminId: req.user._id,
+                adminName: req.user.name
+            }
+        });
+
+        // Construct success message
+        let message = 'User status updated successfully';
+        if (normalizedStatus === 'active') message = 'User activated successfully';
+        else if (normalizedStatus === 'suspended') message = 'User suspended successfully';
+        else if (normalizedStatus === 'disabled') message = 'User disabled successfully';
+
+        res.json({
+            success: true,
+            message,
+            user: {
+                _id: updatedUser._id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                role: updatedUser.role,
+                status: updatedUser.status
+            }
+        });
+    } catch (error) {
+        console.error('❌ UPDATE USER STATUS ERROR:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update user status',
+            error: error.message
+        });
+    }
+};
+
+module.exports = {
+    authUser,
+    registerUser,
+    getUserProfile,
+    updateUserProfile,
+    getUserById,
+    addAddress,
+    getUsers,
+    deleteUser,
+    updateUser,
+    logoutUser,
+    updateFcmToken,
+    updateUserStatus
+};
 

@@ -16,7 +16,7 @@ const app = express();
 // 1. FIX CORS: Allow requests from your frontend
 app.use(cors({
     origin: '*', // WARN: For production, replace '*' with your actual Frontend URL
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -41,6 +41,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/notifications', require('./src/routes/notificationRoutes'));
 app.use('/api/categories', require('./src/routes/categoryRoutes'));
+app.use('/api/settings', require('./src/routes/settingsRoutes'));
 
 // Make uploads folder static
 app.use('/uploads', express.static(path.join(__dirname, '/uploads')));

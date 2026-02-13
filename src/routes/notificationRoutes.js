@@ -8,20 +8,23 @@ const Notification = require('../models/Notification');
 // @access Private
 router.get('/', protect, async (req, res) => {
     try {
-        const notifications = await Notification.find({
-            $or: [
-                { userId: req.user._id },
-                { isGlobal: true }
-            ],
-            deleted: false // Always filter out deleted
-        })
+        const query = {
+            deleted: false,
+            $or: [{ userId: req.user._id }]
+        };
+
+        // Only Admin sees global system notifications
+        if (req.user.role === 'admin') {
+            query.$or.push({ isGlobal: true });
+        }
+
+        const notifications = await Notification.find(query)
             .sort({ createdAt: -1 })
             .limit(50);
 
         const unreadCount = await Notification.countDocuments({
-            userId: req.user._id,
-            read: false,
-            deleted: false
+            ...query,
+            read: false
         });
 
         res.json({
@@ -39,11 +42,17 @@ router.get('/', protect, async (req, res) => {
 // @access Private
 router.get('/unread-count', protect, async (req, res) => {
     try {
-        const unreadCount = await Notification.countDocuments({
-            userId: req.user._id,
+        const query = {
+            deleted: false,
             read: false,
-            deleted: false
-        });
+            $or: [{ userId: req.user._id }]
+        };
+
+        if (req.user.role === 'admin') {
+            query.$or.push({ isGlobal: true });
+        }
+
+        const unreadCount = await Notification.countDocuments(query);
 
         res.json({ unreadCount });
     } catch (error) {
@@ -59,11 +68,19 @@ router.put('/:id/read', protect, async (req, res) => {
     try {
         const notification = await Notification.findOne({
             _id: req.params.id,
-            userId: req.user._id
+            $or: [
+                { userId: req.user._id },
+                { isGlobal: true }
+            ]
         });
 
         if (!notification) {
             return res.status(404).json({ message: 'Notification not found' });
+        }
+
+        // Integrity check: Only admin can touch global
+        if (notification.isGlobal && req.user.role !== 'admin') {
+            return res.status(403).json({ message: 'Not authorized' });
         }
 
         notification.read = true;
@@ -81,14 +98,15 @@ router.put('/:id/read', protect, async (req, res) => {
 // @access Private
 router.put('/read-all', protect, async (req, res) => {
     try {
-        await Notification.updateMany(
-            {
-                userId: req.user._id,
-                read: false,
-                deleted: false
-            },
-            { read: true }
-        );
+        const query = {
+            userId: req.user._id,
+            read: false,
+            deleted: false
+        };
+        // Note: We don't mark GLOBAL as read in batch to avoid side effects for other admins
+        // unless explicitly requested, but for now let's keep it safe (user scoped only)
+
+        await Notification.updateMany(query, { read: true });
 
         res.json({ message: 'All notifications marked as read' });
     } catch (error) {
@@ -104,11 +122,18 @@ router.delete('/:id', protect, async (req, res) => {
     try {
         const notification = await Notification.findOne({
             _id: req.params.id,
-            userId: req.user._id
+            $or: [
+                { userId: req.user._id },
+                { isGlobal: true }
+            ]
         });
 
         if (!notification) {
             return res.status(404).json({ message: 'Notification not found' });
+        }
+
+        if (notification.isGlobal && req.user.role !== 'admin') {
+            return res.status(403).json({ message: 'Not authorized' });
         }
 
         notification.deleted = true;
@@ -126,6 +151,7 @@ router.delete('/:id', protect, async (req, res) => {
 // @access Private
 router.post('/clear-all', protect, async (req, res) => {
     try {
+        // Only clear USER's notifications, never Global ones via clear-all
         await Notification.updateMany(
             { userId: req.user._id },
             { deleted: true }

@@ -459,14 +459,22 @@ const getStats = async (req, res) => {
         const isAdmin = req.user.role === 'admin';
         const targetSellerId = isAdmin && sellerId && sellerId !== 'all' ? sellerId : (!isAdmin ? req.user._id : null);
 
+        // Determine Grouping Granularity (Hourly vs Daily)
+        let groupFormat = "%Y-%m-%d"; // Default Daily
+
+        if (startDate) {
+            const start = new Date(startDate);
+            const end = endDate ? new Date(endDate) : new Date();
+            const diffHours = (end - start) / (1000 * 60 * 60);
+
+            // Catch 24h filter (often slightly loose) or short custom ranges
+            if (diffHours <= 30) {
+                groupFormat = "%Y-%m-%dT%H:00:00Z";
+            }
+        }
+
         if (targetSellerId) {
             // SELLER SPECIFIC REVENUE (Admin viewing seller OR Seller viewing self)
-            // 1. Match delivered orders within date range
-            // 2. Unwind items to check ownership
-            // 3. Lookup product to verify seller
-            // 4. Filter items for this seller
-            // 5. Group by date and sum
-
             console.log(`Calculating revenue for seller: ${targetSellerId}`);
 
             revenuePipeline = [
@@ -488,7 +496,7 @@ const getStats = async (req, res) => {
                 },
                 {
                     $group: {
-                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        _id: { $dateToString: { format: groupFormat, date: "$createdAt" } },
                         dailyRevenue: { $sum: { $multiply: ["$orderItems.price", { $ifNull: ["$orderItems.qty", "$orderItems.quantity", 1] }] } },
                         count: { $sum: 1 } // Items count, not order count
                     }
@@ -498,12 +506,11 @@ const getStats = async (req, res) => {
 
         } else {
             // ADMIN GLOBAL REVENUE
-            // Sum total order value
             revenuePipeline = [
                 { $match: matchStage },
                 {
                     $group: {
-                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        _id: { $dateToString: { format: groupFormat, date: "$createdAt" } },
                         dailyRevenue: { $sum: "$totalPrice" },
                         count: { $sum: 1 }
                     }
@@ -571,6 +578,8 @@ const getStats = async (req, res) => {
         // Products Count
         const productQuery = targetSellerId ? { seller: targetSellerId } : {};
         const totalProducts = await Product.countDocuments(productQuery);
+
+        console.log('Graph Data Final:', JSON.stringify(graphData, null, 2));
 
         res.json({
             totalOrders,

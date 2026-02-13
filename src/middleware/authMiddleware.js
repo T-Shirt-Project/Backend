@@ -39,10 +39,22 @@ const protect = async (req, res, next) => {
 };
 
 const admin = (req, res, next) => {
-    if (req.user && req.user.role === 'admin') {
+    console.log('=== ADMIN MIDDLEWARE CHECK ===');
+    if (req.user) {
+        console.log('User Role:', req.user.role);
+    } else {
+        console.log('❌ No user found in request');
+    }
+
+    if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
+        console.log('✅ Admin authorization confirmed');
         next();
     } else {
-        res.status(403).json({ message: 'Access denied. Admin only.' });
+        console.log('❌ Admin authorization denied');
+        res.status(403).json({
+            success: false,
+            message: 'Access denied. Admin authorization required.'
+        });
     }
 };
 
