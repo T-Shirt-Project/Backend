@@ -27,7 +27,10 @@ const userSchema = new mongoose.Schema({
     }],
     phoneNumber: { type: String },
     fcmToken: { type: String, index: true }, // For Push Notifications
-    mobileAccessEnabled: { type: Boolean, default: false }
+    mobileAccessEnabled: { type: Boolean, default: false },
+    isVerified: { type: Boolean, default: false },
+    otpHash: { type: String },
+    otpExpiry: { type: Date }
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {

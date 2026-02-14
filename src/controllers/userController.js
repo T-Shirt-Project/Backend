@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Activity = require('../models/Activity');
 const jwt = require('jsonwebtoken');
-
+const bcrypt = require('bcryptjs');
+const { sendOTP } = require('../services/emailService');
 
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET || 'secret123', { expiresIn: '30d' });
@@ -11,7 +12,7 @@ const generateToken = (id) => {
 // @desc Auth user & get token
 // @route POST /api/users/login
 const authUser = async (req, res) => {
-    console.log('Incoming Login Request:', req.body);
+    // console.log('Incoming Login Request:', req.body);
     try {
         const { email, password } = req.body;
 
@@ -24,6 +25,15 @@ const authUser = async (req, res) => {
 
         if (user) {
             if (await user.matchPassword(password)) {
+
+                // Check verification
+                if (!user.isVerified) {
+                    return res.status(401).json({
+                        message: 'Email not verified. Please verify your email.',
+                        requiresVerification: true,
+                        email: user.email
+                    });
+                }
 
                 if (user.status === 'suspended') {
                     return res.status(403).json({ message: 'Account suspended. Access terminated.' });
@@ -46,7 +56,6 @@ const authUser = async (req, res) => {
                     details: { ip: req.ip, userAgent: req.headers['user-agent'] }
                 });
 
-                console.log('Login Successful for:', email);
                 res.json({
                     _id: user._id,
                     name: user.name,
@@ -59,11 +68,9 @@ const authUser = async (req, res) => {
                     mobileAccessEnabled: user.mobileAccessEnabled
                 });
             } else {
-                console.log('Login Failed: Incorrect password for', email);
                 res.status(401).json({ message: 'Incorrect password' });
             }
         } else {
-            console.log('Login Failed: Email not found for', email);
             res.status(404).json({ message: 'Email not found' });
         }
     } catch (error) {
@@ -75,7 +82,7 @@ const authUser = async (req, res) => {
 // @desc Register a new user
 // @route POST /api/users
 const registerUser = async (req, res) => {
-    console.log('Incoming Register Request:', req.body);
+    // console.log('Incoming Register Request:', req.body);
     try {
         const { name, email, password, role, phoneNumber } = req.body;
 
@@ -87,16 +94,19 @@ const registerUser = async (req, res) => {
         const userExists = await User.findOne({ email: normalizedEmail });
 
         if (userExists) {
-            console.log('Registration Failed: User already exists:', email);
-            res.status(400).json({ message: 'User already exists' });
-            return;
+            // Check if unverified, maybe we can resend OTP or allow overwrite? 
+            // For now, strict 'user exists' error
+            return res.status(400).json({ message: 'User already exists' });
         }
 
-        // Role enforcement: No Retailer. Only User or Seller. Admin cannot be self-registered.
         const finalRole = (role === 'seller') ? 'seller' : 'user';
-
-        // All self-registered users (User/Seller) start as Active
         const status = 'active';
+
+        // Generate OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const salt = await bcrypt.genSalt(10);
+        const otpHash = await bcrypt.hash(otp, salt);
+        const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
         const user = await User.create({
             name,
@@ -104,7 +114,10 @@ const registerUser = async (req, res) => {
             password,
             role: finalRole,
             phoneNumber,
-            status
+            status,
+            isVerified: false,
+            otpHash,
+            otpExpiry
         });
 
         if (user) {
@@ -119,18 +132,15 @@ const registerUser = async (req, res) => {
                 details: { email: user.email, role: finalRole }
             });
 
-            console.log('Registration Successful for:', email);
+            // Send OTP Email
+            await sendOTP(user.email, otp);
+
             res.status(201).json({
-                _id: user._id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                token: generateToken(user._id),
-                message: 'Registration successful.',
-                mobileAccessEnabled: user.mobileAccessEnabled
+                message: 'Registration successful. Please verify your email.',
+                requiresVerification: true,
+                email: user.email
             });
         } else {
-            console.log('Registration Failed: Invalid user data');
             res.status(400).json({ message: 'Invalid user data' });
         }
     } catch (error) {
@@ -139,7 +149,83 @@ const registerUser = async (req, res) => {
     }
 };
 
+// @desc Verify OTP
+// @route POST /api/users/verify-otp
+const verifyOTP = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
 
+        if (!email || !otp) {
+            return res.status(400).json({ message: 'Email and OTP are required' });
+        }
+
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        if (user.isVerified) {
+            return res.status(400).json({ message: 'User already verified' });
+        }
+
+        if (user.otpExpiry < Date.now()) {
+            return res.status(400).json({ message: 'OTP has expired' });
+        }
+
+        const isMatch = await bcrypt.compare(otp, user.otpHash);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        user.isVerified = true;
+        user.otpHash = undefined;
+        user.otpExpiry = undefined;
+        await user.save();
+
+        res.json({
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            status: user.status,
+            phoneNumber: user.phoneNumber,
+            token: generateToken(user._id),
+            message: 'Verification successful',
+            mobileAccessEnabled: user.mobileAccessEnabled
+        });
+
+    } catch (error) {
+        console.error('Verify OTP Error:', error);
+        res.status(500).json({ message: 'Verification failed' });
+    }
+}
+
+// @desc Resend OTP
+// @route POST /api/users/resend-otp
+const resendOTP = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ message: 'Email is required' });
+
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        if (user.isVerified) return res.status(400).json({ message: 'User already verified' });
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const salt = await bcrypt.genSalt(10);
+        user.otpHash = await bcrypt.hash(otp, salt);
+        user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+        await user.save();
+
+        await sendOTP(user.email, otp);
+
+        res.json({ message: 'OTP resent successfully' });
+
+    } catch (error) {
+        console.error('Resend OTP Error:', error);
+        res.status(500).json({ message: 'Resend failed' });
+    }
+}
 
 // @desc Get user profile
 // @route GET /api/users/profile
@@ -164,42 +250,54 @@ const getUserProfile = async (req, res) => {
 // @desc Update user profile
 // @route PUT /api/users/profile
 const updateUserProfile = async (req, res) => {
-    const user = await User.findById(req.user._id);
-
-    if (user) {
-        user.name = req.body.name || user.name;
-        user.email = req.body.email || user.email;
-        user.phoneNumber = req.body.phoneNumber || user.phoneNumber;
-        if (req.body.password) {
-            user.password = req.body.password;
+    try {
+        const { name, phoneNumber } = req.body;
+        if (!name || name.trim().length === 0) {
+            return res.status(400).json({ message: 'Name cannot be empty' });
         }
 
-        const updatedUser = await user.save();
+        // Use findByIdAndUpdate to only update specific fields, avoiding overwrite of password/role
+        const updatedUser = await User.findByIdAndUpdate(
+            req.user._id,
+            {
+                $set: {
+                    name: name.trim(),
+                    phoneNumber: phoneNumber ? phoneNumber.trim() : ""
+                }
+            },
+            { new: true, runValidators: true }
+        );
 
-        // Log profile update
-        await Activity.create({
-            userId: user._id,
-            role: user.role,
-            type: 'profile_updated',
-            targetType: 'User',
-            targetId: user._id,
-            description: `${user.name} updated their profile details.`,
-            details: { fields: Object.keys(req.body).filter(k => k !== 'password') }
-        });
+        if (updatedUser) {
+            // Log profile update
+            await Activity.create({
+                userId: updatedUser._id,
+                role: updatedUser.role,
+                type: 'profile_updated',
+                targetType: 'User',
+                targetId: updatedUser._id,
+                description: `${updatedUser.name} updated their profile details.`,
+                details: { fields: ['name', 'phoneNumber'] }
+            });
 
-        res.json({
-            _id: updatedUser._id,
-            name: updatedUser.name,
-            email: updatedUser.email,
-            phoneNumber: updatedUser.phoneNumber,
-            role: updatedUser.role,
-            token: generateToken(updatedUser._id),
-            mobileAccessEnabled: updatedUser.mobileAccessEnabled,
-        });
-    } else {
-        res.status(404).json({ message: 'User not found' });
+            res.json({
+                _id: updatedUser._id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                phoneNumber: updatedUser.phoneNumber,
+                role: updatedUser.role,
+                token: generateToken(updatedUser._id),
+                mobileAccessEnabled: updatedUser.mobileAccessEnabled,
+            });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Profile update failed', error: error.message });
     }
 };
+
+// ... keep existing addAddress, getUserById, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken, updateUserStatus ...
 
 // @desc Add address
 // @route POST /api/users/address
@@ -658,6 +756,8 @@ module.exports = {
     updateUser,
     logoutUser,
     updateFcmToken,
-    updateUserStatus
+    updateUserStatus,
+    verifyOTP,
+    resendOTP
 };
 
