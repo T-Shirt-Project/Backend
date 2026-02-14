@@ -35,7 +35,7 @@ const sendToToken = async (token, title, body, data = {}, imageUrl = null) => {
         notification: {
             title,
             body,
-            ...(imageUrl && { imageUrl })
+            ...(imageUrl && { image: imageUrl })
         },
         data: stringData,
         android: {
@@ -45,7 +45,7 @@ const sendToToken = async (token, title, body, data = {}, imageUrl = null) => {
                 priority: 'high',
                 defaultSound: true,
                 defaultVibrateTimings: true,
-                ...(imageUrl && { imageUrl })
+                ...(imageUrl && { image: imageUrl })
             }
         },
         apns: {
@@ -91,7 +91,7 @@ const sendToTopic = async (topic, title, body, data = {}, imageUrl = null) => {
         notification: {
             title,
             body,
-            ...(imageUrl && { imageUrl })
+            ...(imageUrl && { image: imageUrl })
         },
         data: stringData,
         android: {
@@ -99,7 +99,7 @@ const sendToTopic = async (topic, title, body, data = {}, imageUrl = null) => {
             notification: {
                 channelId: 'high_importance_channel',
                 priority: 'high',
-                ...(imageUrl && { imageUrl })
+                ...(imageUrl && { image: imageUrl })
             }
         },
         topic: topic
