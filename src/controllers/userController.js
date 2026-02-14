@@ -26,15 +26,6 @@ const authUser = async (req, res) => {
         if (user) {
             if (await user.matchPassword(password)) {
 
-                // Check verification
-                if (!user.isVerified) {
-                    return res.status(401).json({
-                        message: 'Email not verified. Please verify your email.',
-                        requiresVerification: true,
-                        email: user.email
-                    });
-                }
-
                 if (user.status === 'suspended') {
                     return res.status(403).json({ message: 'Account suspended. Access terminated.' });
                 }
@@ -43,6 +34,29 @@ const authUser = async (req, res) => {
                 }
                 if (user.status === 'deleted') {
                     return res.status(401).json({ message: 'Account deleted. Access restricted.' });
+                }
+
+                // Check verification
+                if (!user.isVerified) {
+                    // Regenerate OTP
+                    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                    const salt = await bcrypt.genSalt(10);
+                    user.otpHash = await bcrypt.hash(otp, salt);
+                    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+                    await user.save();
+
+                    // Send email
+                    const emailSent = await sendOTP(user.email, otp);
+
+                    if (!emailSent) {
+                        return res.status(500).json({ message: 'Failed to send verification email. Please try again later.' });
+                    }
+
+                    return res.status(401).json({
+                        message: 'Email not verified. A new OTP has been sent to your email.',
+                        requiresVerification: true,
+                        email: user.email
+                    });
                 }
 
                 // Log login activity
@@ -217,7 +231,11 @@ const resendOTP = async (req, res) => {
         user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
         await user.save();
 
-        await sendOTP(user.email, otp);
+        const emailSent = await sendOTP(user.email, otp);
+
+        if (!emailSent) {
+            return res.status(500).json({ message: 'Failed to resend OTP. Please try again later.' });
+        }
 
         res.json({ message: 'OTP resent successfully' });
 
