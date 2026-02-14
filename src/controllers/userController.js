@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Activity = require('../models/Activity');
+const PendingUser = require('../models/PendingUser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { sendOTP } = require('../services/emailService');
@@ -38,25 +39,7 @@ const authUser = async (req, res) => {
 
                 // Check verification
                 if (!user.isVerified) {
-                    // Regenerate OTP
-                    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-                    const salt = await bcrypt.genSalt(10);
-                    user.otpHash = await bcrypt.hash(otp, salt);
-                    user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-                    await user.save();
-
-                    // Send email
-                    const emailSent = await sendOTP(user.email, otp);
-
-                    if (!emailSent) {
-                        return res.status(500).json({ message: 'Failed to send verification email. Please try again later.' });
-                    }
-
-                    return res.status(401).json({
-                        message: 'Email not verified. A new OTP has been sent to your email.',
-                        requiresVerification: true,
-                        email: user.email
-                    });
+                    return res.status(401).json({ message: 'Account not verified. Please contact support.' });
                 }
 
                 // Log login activity
@@ -93,10 +76,9 @@ const authUser = async (req, res) => {
     }
 };
 
-// @desc Register a new user
-// @route POST /api/users
+// @desc Register a new user (Pending OTP)
+// @route POST /api/users/register
 const registerUser = async (req, res) => {
-    // console.log('Incoming Register Request:', req.body);
     try {
         const { name, email, password, role, phoneNumber } = req.body;
 
@@ -105,65 +87,63 @@ const registerUser = async (req, res) => {
         }
 
         const normalizedEmail = email.toLowerCase().trim();
-        const userExists = await User.findOne({ email: normalizedEmail });
 
+        // 1. Check active user
+        const userExists = await User.findOne({ email: normalizedEmail });
         if (userExists) {
-            // Check if unverified, maybe we can resend OTP or allow overwrite? 
-            // For now, strict 'user exists' error
             return res.status(400).json({ message: 'User already exists' });
         }
 
         const finalRole = (role === 'seller') ? 'seller' : 'user';
-        const status = 'active';
 
-        // Generate OTP
+        // 2. Generate OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const salt = await bcrypt.genSalt(10);
         const otpHash = await bcrypt.hash(otp, salt);
         const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
-        const user = await User.create({
-            name,
-            email: normalizedEmail,
-            password,
-            role: finalRole,
-            phoneNumber,
-            status,
-            isVerified: false,
-            otpHash,
-            otpExpiry
+        // 3. Update or Create PendingUser
+        // Find existing pending to overwrite (resend/restart scenario) or create new
+        let pendingUser = await PendingUser.findOne({ email: normalizedEmail });
+        if (pendingUser) {
+            pendingUser.name = name;
+            pendingUser.password = password; // Will be re-hashed by pre-save
+            pendingUser.role = finalRole;
+            pendingUser.phoneNumber = phoneNumber;
+            pendingUser.otpHash = otpHash;
+            pendingUser.otpExpiry = otpExpiry;
+            await pendingUser.save();
+        } else {
+            pendingUser = await PendingUser.create({
+                name,
+                email: normalizedEmail,
+                password, // Hashed by PendingUser pre-save hook
+                role: finalRole,
+                phoneNumber,
+                otpHash,
+                otpExpiry
+            });
+        }
+
+        // 4. Send Email
+        const emailSent = await sendOTP(normalizedEmail, otp);
+        if (!emailSent) {
+            return res.status(500).json({ message: 'Failed to send verification email. Please try again.' });
+        }
+
+        res.status(201).json({
+            message: 'Verification code sent to email.',
+            requiresVerification: true,
+            email: normalizedEmail
         });
 
-        if (user) {
-            // Log registration
-            await Activity.create({
-                userId: user._id,
-                role: finalRole,
-                type: 'registration',
-                targetType: 'User',
-                targetId: user._id,
-                description: `New ${finalRole} account registered: ${user.name}`,
-                details: { email: user.email, role: finalRole }
-            });
-
-            // Send OTP Email
-            await sendOTP(user.email, otp);
-
-            res.status(201).json({
-                message: 'Registration successful. Please verify your email.',
-                requiresVerification: true,
-                email: user.email
-            });
-        } else {
-            res.status(400).json({ message: 'Invalid user data' });
-        }
     } catch (error) {
         console.error('Registration Error:', error);
         res.status(500).json({ message: 'Registration failed. Please try again.' });
     }
 };
 
-// @desc Verify OTP
+// @desc Verify OTP & Create User
 // @route POST /api/users/verify-otp
 const verifyOTP = async (req, res) => {
     try {
@@ -173,28 +153,58 @@ const verifyOTP = async (req, res) => {
             return res.status(400).json({ message: 'Email and OTP are required' });
         }
 
-        const user = await User.findOne({ email: email.toLowerCase().trim() });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // 1. Check Pending User
+        const pendingUser = await PendingUser.findOne({ email: normalizedEmail });
+        if (!pendingUser) {
+            return res.status(400).json({ message: 'Invalid or expired verification request. Please register again.' });
         }
 
-        if (user.isVerified) {
-            return res.status(400).json({ message: 'User already verified' });
-        }
-
-        if (user.otpExpiry < Date.now()) {
+        // 2. Verify Expiry
+        if (pendingUser.otpExpiry < Date.now()) {
             return res.status(400).json({ message: 'OTP has expired' });
         }
 
-        const isMatch = await bcrypt.compare(otp, user.otpHash);
+        // 3. Verify Hash
+        const isMatch = await bcrypt.compare(otp, pendingUser.otpHash);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid OTP' });
         }
 
-        user.isVerified = true;
-        user.otpHash = undefined;
-        user.otpExpiry = undefined;
-        await user.save();
+        // 4. Create Real User
+        // PendingUser password is known to be hashed already via PendingUser pre-save hook.
+
+        const newUserDoc = {
+            name: pendingUser.name,
+            email: pendingUser.email,
+            password: pendingUser.password, // Already Hashed
+            role: pendingUser.role,
+            phoneNumber: pendingUser.phoneNumber,
+            status: 'active',
+            isVerified: true,
+            mobileAccessEnabled: false,
+            addresses: [],
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+
+        const result = await User.collection.insertOne(newUserDoc);
+        const user = await User.findById(result.insertedId);
+
+        // 5. Cleanup Pending
+        await PendingUser.deleteOne({ _id: pendingUser._id });
+
+        // 6. Log & Return Token
+        await Activity.create({
+            userId: user._id,
+            role: user.role,
+            type: 'registration',
+            targetType: 'User',
+            targetId: user._id,
+            description: `New ${user.role} account registered & verified: ${user.name}`,
+            details: { email: user.email, role: user.role }
+        });
 
         res.json({
             _id: user._id,
@@ -214,25 +224,29 @@ const verifyOTP = async (req, res) => {
     }
 }
 
-// @desc Resend OTP
+// @desc Resend OTP (For Pending Users)
 // @route POST /api/users/resend-otp
 const resendOTP = async (req, res) => {
     try {
         const { email } = req.body;
         if (!email) return res.status(400).json({ message: 'Email is required' });
 
-        const user = await User.findOne({ email: email.toLowerCase().trim() });
-        if (!user) return res.status(404).json({ message: 'User not found' });
-        if (user.isVerified) return res.status(400).json({ message: 'User already verified' });
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // Check if already registered fully
+        const existing = await User.findOne({ email: normalizedEmail });
+        if (existing) return res.status(400).json({ message: 'User already registered. Please login.' });
+
+        const pendingUser = await PendingUser.findOne({ email: normalizedEmail });
+        if (!pendingUser) return res.status(404).json({ message: 'No pending registration found.' });
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const salt = await bcrypt.genSalt(10);
-        user.otpHash = await bcrypt.hash(otp, salt);
-        user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-        await user.save();
+        pendingUser.otpHash = await bcrypt.hash(otp, salt);
+        pendingUser.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+        await pendingUser.save();
 
-        const emailSent = await sendOTP(user.email, otp);
-
+        const emailSent = await sendOTP(pendingUser.email, otp);
         if (!emailSent) {
             return res.status(500).json({ message: 'Failed to resend OTP. Please try again later.' });
         }
