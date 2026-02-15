@@ -1,12 +1,11 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    refreshTokens: [{ type: String }], // Store valid refresh tokens (hashed ideally)
+    refreshTokens: [{ type: String }],
     role: {
         type: String,
         enum: ['user', 'seller', 'admin'],
@@ -26,18 +25,13 @@ const userSchema = new mongoose.Schema({
         isDefault: { type: Boolean, default: false }
     }],
     phoneNumber: { type: String },
-    fcmToken: { type: String, index: true }, // For Push Notifications
-    mobileAccessEnabled: { type: Boolean, default: false },
-    isVerified: { type: Boolean, default: false },
-    otpHash: { type: String },
-    otpExpiry: { type: Date }
+    fcmToken: { type: String, index: true },
+    mobileAccessEnabled: { type: Boolean, default: false }
 }, { timestamps: true });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
-
-
 
 userSchema.pre('save', async function (next) {
     if (!this.isModified('password') || !this.password) {

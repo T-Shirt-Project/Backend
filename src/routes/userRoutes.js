@@ -1,12 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken, updateUserStatus, verifyOTP, resendOTP } = require('../controllers/userController');
+const { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken, updateUserStatus } = require('../controllers/userController');
 const { protect, admin } = require('../middleware/authMiddleware');
 
 router.post('/', registerUser);
 router.post('/login', authUser);
-router.post('/verify-otp', verifyOTP);
-router.post('/resend-otp', resendOTP);
 router.post('/logout', protect, logoutUser);
 router.put('/push-token', protect, updateFcmToken);
 router.route('/profile').get(protect, getUserProfile).put(protect, updateUserProfile);
