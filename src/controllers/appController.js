@@ -1,237 +1,173 @@
 const User = require('../models/User');
 const TempSignup = require('../models/TempSignup');
 const sendEmail = require('../utils/sendEmail');
+const cryptoUtils = require('../utils/cryptoUtils');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const Joi = require('joi');
+const crypto = require('crypto');
 
+// Helper Token Generation
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET || 'secret123', { expiresIn: '30d' });
 };
 
-// ─── Professional HTML Email Template ────────────────────────────────
-const buildOtpEmail = (name, otp, isResend = false) => {
-    return `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Verify Your Email</title>
-    </head>
-    <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9;">
-        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
-            <!-- Header -->
-            <tr>
-                <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 32px; text-align: center;">
-                    <div style="width: 64px; height: 64px; background-color: rgba(255,255,255,0.2); border-radius: 50%; margin: 0 auto 16px; line-height: 64px; font-size: 28px;">
-                        ✉️
-                    </div>
-                    <h1 style="color: #ffffff; font-size: 24px; font-weight: 700; margin: 0;">${isResend ? 'Resend Verification' : 'Verify Your Email'}</h1>
-                </td>
-            </tr>
-            <!-- Body -->
-            <tr>
-                <td style="padding: 40px 32px;">
-                    <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 8px;">
-                        Hello <strong>${name}</strong>,
-                    </p>
-                    <p style="color: #555555; font-size: 15px; line-height: 1.6; margin: 0 0 32px;">
-                        ${isResend ? 'You requested a new verification code.' : 'Thank you for signing up! Please use the code below to verify your email address and complete your registration.'}
-                    </p>
-                    <!-- OTP Box -->
-                    <div style="background: linear-gradient(135deg, #f8f9ff 0%, #eef1ff 100%); border: 2px dashed #667eea; border-radius: 12px; padding: 24px; text-align: center; margin: 0 0 32px;">
-                        <p style="color: #888; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; margin: 0 0 12px; font-weight: 600;">Your Verification Code</p>
-                        <div style="font-size: 40px; font-weight: 800; color: #667eea; letter-spacing: 10px; font-family: 'Courier New', monospace;">${otp}</div>
-                    </div>
-                    <!-- Expiry Notice -->
-                    <div style="background-color: #fff8e1; border-left: 4px solid #ffc107; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 0 0 24px;">
-                        <p style="color: #8d6e00; font-size: 14px; margin: 0;">
-                            ⏱️ This code is valid for <strong>10 minutes</strong>. Do not share it with anyone.
-                        </p>
-                    </div>
-                    <p style="color: #999999; font-size: 13px; line-height: 1.6; margin: 0;">
-                        If you didn't create an account, please ignore this email. No action is needed.
-                    </p>
-                </td>
-            </tr>
-            <!-- Footer -->
-            <tr>
-                <td style="background-color: #f8f9fa; padding: 24px 32px; text-align: center; border-top: 1px solid #e9ecef;">
-                    <p style="color: #aaa; font-size: 12px; margin: 0;">
-                        © ${new Date().getFullYear()} T-Shirt Store. All rights reserved.
-                    </p>
-                </td>
-            </tr>
-        </table>
-    </body>
-    </html>
-    `;
-};
+// Joi Schemas
+const signupSchema = Joi.object({
+    name: Joi.string().min(2).max(50).required().trim(),
+    email: Joi.string().email().required().lowercase().trim(),
+    password: Joi.string().min(6).required()
+});
 
-// @desc    Initiate Signup (Flutter App Only)
+const verifySchema = Joi.object({
+    email: Joi.string().email().required().lowercase().trim(),
+    otp: Joi.string().length(6).pattern(/^[0-9]+$/).required()
+});
+
+const resendSchema = Joi.object({
+    email: Joi.string().email().required().lowercase().trim()
+});
+
+// ─── Phase 2 Step 1 & 2: Initiate Signup & Send OTP ─────────────────────────
 // @route   POST /api/app/signup
 const signupApp = async (req, res) => {
     try {
-        const { name, email, password } = req.body;
-
-        if (!name || !email || !password) {
-            return res.status(400).json({ message: 'Please provide name, email, and password' });
+        // 1. Validate Input
+        const { error, value } = signupSchema.validate(req.body);
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
         }
+        const { name, email, password } = value;
 
-        // Validate email format
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email)) {
-            return res.status(400).json({ message: 'Invalid email format' });
-        }
-
-        const normalizedEmail = email.toLowerCase().trim();
-
-        // 1. Check if user already exists
-        const userExists = await User.findOne({ email: normalizedEmail });
+        // 2. Check if user already exists
+        const userExists = await User.findOne({ email });
         if (userExists) {
             return res.status(400).json({ message: 'User already exists' });
         }
 
-        // 2. Generate 6-digit OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        // 3. Generate Crypto-Secure OTP
+        const otp = crypto.randomInt(100000, 999999).toString();
 
-        // 3. Hash OTP
+        // 4. Hash OTP (bcrypt)
         const salt = await bcrypt.genSalt(10);
         const hashedOtp = await bcrypt.hash(otp, salt);
 
-        // 4. Store/Update temporary signup record (invalidates old OTP on resend)
-        let tempUser = await TempSignup.findOne({ email: normalizedEmail });
+        // 5. Encrypt Password (AES) - Secure transient storage
+        const encryptedPassword = cryptoUtils.encrypt(password);
 
-        if (tempUser) {
-            tempUser.name = name;
-            tempUser.password = password;
-            tempUser.otpHash = hashedOtp;
-            tempUser.createdAt = Date.now(); // Reset expiry
-            await tempUser.save();
-        } else {
-            tempUser = await TempSignup.create({
-                name,
-                email: normalizedEmail,
-                password,
-                otpHash: hashedOtp
-            });
+        // 6. Delete any existing unverified temp record for this email (clean slate)
+        const existingTemp = await TempSignup.findOne({ email });
+        if (existingTemp) {
+            // Check rate limiting on attempts? Handled by middleware mostly, but good to check created time.
+            // If recently created (< 1 min), maybe block? Let's rely on middleware.
+            await TempSignup.deleteOne({ email });
         }
 
-        // 5. Build & Send Email
-        const message = buildOtpEmail(name, otp, false);
+        // 7. Store Temp Record
+        await TempSignup.create({
+            name,
+            email,
+            encryptedPassword,
+            otpHash: hashedOtp,
+            attempts: 0
+            // expires automatically via TTL
+        });
 
+        // 8. Build Email Template
+        const message = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+            <h2 style="color: #4A90E2; text-align: center;">Verify Your Email</h2>
+            <p style="font-size: 16px; color: #333;">Hello <strong>${name}</strong>,</p>
+            <p style="font-size: 16px; color: #555;">Please verify your email address to complete your registration.</p>
+            <div style="background-color: #f4f6f8; padding: 15px; text-align: center; border-radius: 5px; margin: 20px 0;">
+                <span style="font-size: 24px; letter-spacing: 5px; font-weight: bold; color: #333;">${otp}</span>
+            </div>
+            <p style="font-size: 14px; color: #777;">This code will expire in 5 minutes.</p>
+            <p style="font-size: 14px; color: #999; margin-top: 30px;">If you didn't request this code, please ignore this email.</p>
+        </div>
+        `;
+
+        // 9. Send Email
         await sendEmail({
-            email: normalizedEmail,
-            subject: 'Verify Your Email Address',
+            email,
+            subject: 'Your Verification Code',
             message
         });
 
-        res.status(200).json({ message: 'OTP sent to email successfully' });
+        res.status(200).json({ message: 'Verification code sent to email' });
 
     } catch (error) {
-        console.error('Signup App Error:', error);
-
-        // Generic error handling for email or other failures
-        // Do NOT expose internal error details to the client
-        return res.status(500).json({ message: 'Failed to send OTP. Please try again later.' });
+        console.error('Signup Error:', error);
+        res.status(500).json({ message: 'Failed to initiate signup. Please try again.' });
     }
 };
 
-// @desc    Resend OTP (Flutter App Only, email-only — no password needed)
-// @route   POST /api/app/resend-otp
-const resendOtpApp = async (req, res) => {
-    try {
-        const { email } = req.body;
-
-        if (!email) {
-            return res.status(400).json({ message: 'Email is required' });
-        }
-
-        const normalizedEmail = email.toLowerCase().trim();
-
-        // 1. Find temporary signup record
-        const tempUser = await TempSignup.findOne({ email: normalizedEmail });
-
-        if (!tempUser) {
-            return res.status(404).json({ message: 'Signup session expired. Please sign up again.' });
-        }
-
-        // 2. Generate new 6-digit OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-        // 3. Hash OTP
-        const salt = await bcrypt.genSalt(10);
-        const hashedOtp = await bcrypt.hash(otp, salt);
-
-        // 4. Update temporary record (invalidates old OTP)
-        tempUser.otpHash = hashedOtp;
-        tempUser.createdAt = Date.now(); // Reset expiry
-        await tempUser.save();
-
-        // 5. Build & Send Email
-        const message = buildOtpEmail(tempUser.name, otp, true);
-
-        await sendEmail({
-            email: normalizedEmail,
-            subject: 'Verify Your Email Address',
-            message
-        });
-
-        res.status(200).json({ message: 'OTP resent successfully' });
-
-    } catch (error) {
-        console.error('Resend OTP App Error:', error);
-        return res.status(500).json({ message: 'Failed to resend OTP. Please try again later.' });
-    }
-};
-
-// @desc    Verify OTP and Create Account (Flutter App Only)
+// ─── Phase 2 Step 3 & 4: Verify OTP & Create Account ───────────────────────
 // @route   POST /api/app/verify-signup-otp
 const verifySignupOtp = async (req, res) => {
     try {
-        const { email, otp } = req.body;
-
-        if (!email || !otp) {
-            return res.status(400).json({ message: 'Email and OTP are required' });
+        // 1. Validate Input
+        const { error, value } = verifySchema.validate(req.body);
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
         }
+        const { email, otp } = value;
 
-        const normalizedEmail = email.toLowerCase().trim();
-
-        // 1. Find temporary signup record
-        const tempUser = await TempSignup.findOne({ email: normalizedEmail });
+        // 2. Find Temp Record
+        const tempUser = await TempSignup.findOne({ email });
 
         if (!tempUser) {
-            return res.status(400).json({ message: 'OTP expired or invalid email' });
+            return res.status(400).json({ message: 'Verification code expired or invalid email' });
         }
 
-        // 2. Validate OTP
+        // 3. Check Attempt Limit (Max 5 within TTL)
+        if (tempUser.attempts >= 5) {
+            await TempSignup.deleteOne({ email }); // Security: delete record on max attempts
+            return res.status(400).json({ message: 'Too many failed attempts. Please restart signup.' });
+        }
+
+        // 4. Verify OTP Hash
         const isMatch = await bcrypt.compare(otp, tempUser.otpHash);
+
         if (!isMatch) {
-            return res.status(400).json({ message: 'Invalid OTP' });
+            // Increment attempt counter
+            tempUser.attempts += 1;
+            await tempUser.save();
+            return res.status(400).json({ message: 'Invalid verification code' });
         }
 
-        // 3. Double-check for race condition
-        const userExists = await User.findOne({ email: normalizedEmail });
+        // 5. Final Duplicate Check (Race conditions)
+        const userExists = await User.findOne({ email });
         if (userExists) {
-            await TempSignup.deleteOne({ email: normalizedEmail });
+            await TempSignup.deleteOne({ email });
             return res.status(400).json({ message: 'User already exists' });
         }
 
-        // 4. Create User (password hashed by User model pre-save hook)
+        // 6. Decrypt Password (get original plain text)
+        let originalPassword;
+        try {
+            originalPassword = cryptoUtils.decrypt(tempUser.encryptedPassword);
+        } catch (e) {
+            await TempSignup.deleteOne({ email });
+            return res.status(500).json({ message: 'Security error. Please try signing up again.' });
+        }
+
+        // 7. Create User (Standard User model hashing flows normally)
+        // Even though temp storage was encrypted, User model expects plain text to hash it.
         const newUser = await User.create({
             name: tempUser.name,
             email: tempUser.email,
-            password: tempUser.password,
+            password: originalPassword, // Will be hashed by User model pre-save hook
             role: 'user',
             status: 'active',
             mobileAccessEnabled: true
         });
 
         if (newUser) {
-            // 5. Delete temporary record
-            await TempSignup.deleteOne({ email: normalizedEmail });
+            // Cleanup Temp Record
+            await TempSignup.deleteOne({ email });
 
-            // 6. Generate JWT
+            // Generate Token
             const token = generateToken(newUser._id);
 
             res.status(201).json({
@@ -244,12 +180,70 @@ const verifySignupOtp = async (req, res) => {
                 mobileAccessEnabled: newUser.mobileAccessEnabled
             });
         } else {
-            res.status(400).json({ message: 'Failed to create user' });
+            res.status(400).json({ message: 'Failed to create account' });
         }
 
     } catch (error) {
         console.error('Verify OTP Error:', error);
-        res.status(500).json({ message: 'Server Error during verification' });
+        res.status(500).json({ message: 'Verification failed due to server error' });
+    }
+};
+
+// ─── Resend Logic (Rate Limited Middleware Applied) ────────────────────────
+// @route   POST /api/app/resend-otp
+const resendOtpApp = async (req, res) => {
+    try {
+        const { error, value } = resendSchema.validate(req.body);
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
+        }
+        const { email } = value;
+
+        // Check if temp record exists
+        const tempUser = await TempSignup.findOne({ email });
+        if (!tempUser) {
+            return res.status(404).json({ message: 'Session expired. Please sign up again.' });
+        }
+
+        // Check attempt count logic? Maybe reset attempts on resend?
+        // Usually resend invalidates old code.
+
+        // Generate NEW OTP
+        const otp = crypto.randomInt(100000, 999999).toString();
+        const salt = await bcrypt.genSalt(10);
+        const hashedOtp = await bcrypt.hash(otp, salt);
+
+        // Update Record (Reset attempts, update hash, reset expiry via updatedAt if using timestamp update?)
+        // Mongoose 'expires' uses createdAt. We must update createdAt to refresh specific TTL or document won't live longer.
+        // Actually, updating document doesn't reset TTL usually in Mongo unless field updated.
+        // So we update createdAt manually.
+
+        tempUser.otpHash = hashedOtp;
+        tempUser.attempts = 0; // Reset verification attempts for new code
+        tempUser.createdAt = new Date(); // Reset TTL
+        await tempUser.save();
+
+        // Send Email
+        const message = `
+        <div style="font-family: Arial, sans-serif;">
+            <h2>Verification Code Resent</h2>
+            <p>Your new verification code is:</p>
+            <h3>${otp}</h3>
+            <p>Valid for 5 minutes.</p>
+        </div>
+        `;
+
+        await sendEmail({
+            email,
+            subject: 'New Verification Code',
+            message
+        });
+
+        res.status(200).json({ message: 'New code sent successfully' });
+
+    } catch (error) {
+        console.error('Resend Error:', error);
+        res.status(500).json({ message: 'Failed to resend code' });
     }
 };
 

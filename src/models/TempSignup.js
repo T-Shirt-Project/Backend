@@ -1,16 +1,21 @@
 const mongoose = require('mongoose');
 
-const tempSignupSchema = mongoose.Schema({
+const tempSignupSchema = new mongoose.Schema({
     name: {
         type: String,
-        required: true
+        required: true,
+        trim: true
     },
     email: {
         type: String,
         required: true,
-        unique: true
+        unique: true, // Only one active verification per email
+        lowercase: true,
+        trim: true
     },
-    password: {
+    // Encrypted password (AES), NOT plain text, NOT bcrypt hash (yet)
+    // Allows retrieving original password to hash properly on User creation
+    encryptedPassword: {
         type: String,
         required: true
     },
@@ -18,12 +23,20 @@ const tempSignupSchema = mongoose.Schema({
         type: String,
         required: true
     },
+    attempts: {
+        type: Number,
+        default: 0
+    },
     createdAt: {
         type: Date,
         default: Date.now,
-        expires: 600 // 10 minutes (600 seconds)
+        expires: 300 // 5 minutes TTL (automatically deleted by MongoDB)
     }
 });
+
+// Ensure indexes are created for expiry and uniqueness
+tempSignupSchema.index({ createdAt: 1 }, { expireAfterSeconds: 300 });
+tempSignupSchema.index({ email: 1 }, { unique: true });
 
 const TempSignup = mongoose.model('TempSignup', tempSignupSchema);
 
