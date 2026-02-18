@@ -1,10 +1,12 @@
 const nodemailer = require('nodemailer');
 const sendEmail = async (options) => {
+    const port = parseInt(process.env.ZOHO_SMTP_PORT) || 587;
+
     // 1. Create Transporter
     const transporter = nodemailer.createTransport({
         host: process.env.ZOHO_SMTP_HOST,
-        port: process.env.ZOHO_SMTP_PORT,
-        secure: false, // true for 465, false for other ports
+        port: port,
+        secure: port === 465, // Port 465 requires SSL/TLS
         auth: {
             user: process.env.ZOHO_SMTP_USER,
             pass: process.env.ZOHO_SMTP_PASS
@@ -21,7 +23,9 @@ const sendEmail = async (options) => {
         html: options.message
     };
     // 3. Send Email
+    console.log(`📧 Sending email to ${options.email} via ${process.env.ZOHO_SMTP_HOST}:${port}`);
     await transporter.sendMail(mailOptions);
+    console.log(`✅ Email sent successfully to ${options.email}`);
 };
 
 module.exports = sendEmail;
