@@ -1,8 +1,22 @@
 const admin = require('firebase-admin');
 
 // Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK
 try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    if (process.env.FB_PROJECT_ID && process.env.FB_CLIENT_EMAIL && process.env.FB_PRIVATE_KEY) {
+
+        // Handle private key newlines
+        const privateKey = process.env.FB_PRIVATE_KEY.replace(/\\n/g, '\n');
+
+        admin.initializeApp({
+            credential: admin.credential.cert({
+                projectId: process.env.FB_PROJECT_ID,
+                clientEmail: process.env.FB_CLIENT_EMAIL,
+                privateKey: privateKey
+            })
+        });
+        console.log('✅ Firebase Admin Initialized with ENV credentials');
+    } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
         const serviceAccount = require(require('path').resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH));
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
