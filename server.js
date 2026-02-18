@@ -39,6 +39,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/app', require('./src/routes/appRoutes'));
 app.use('/api/notifications', require('./src/routes/notificationRoutes'));
 app.use('/api/categories', require('./src/routes/categoryRoutes'));
 app.use('/api/settings', require('./src/routes/settingsRoutes'));
@@ -67,7 +68,6 @@ const startServer = async () => {
         // 2. FIX BINDING: Explicitly bind to 0.0.0.0 to listen on public IP
         app.listen(PORT, '0.0.0.0', () => {
             console.log(`✅ Server running on port ${PORT}`);
-            console.log(`🌐 Public Access: http://13.235.83.120:${PORT}/api`);
             console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
         });
     } catch (error) {
