@@ -131,11 +131,9 @@ const signupApp = async (req, res) => {
     } catch (error) {
         console.error('Signup App Error:', error);
 
-        if (error.code === 'EAUTH' || error.command === 'CONN') {
-            return res.status(500).json({ message: 'Failed to send OTP email. Please try again.' });
-        }
-
-        res.status(500).json({ message: 'Server Error during signup' });
+        // Generic error handling for email or other failures
+        // Do NOT expose internal error details to the client
+        return res.status(500).json({ message: 'Failed to send OTP. Please try again later.' });
     }
 };
 
@@ -183,7 +181,7 @@ const resendOtpApp = async (req, res) => {
 
     } catch (error) {
         console.error('Resend OTP App Error:', error);
-        res.status(500).json({ message: 'Server Error during resend' });
+        return res.status(500).json({ message: 'Failed to resend OTP. Please try again later.' });
     }
 };
 

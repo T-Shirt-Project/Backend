@@ -1,49 +1,56 @@
 const nodemailer = require('nodemailer');
 
 const sendEmail = async (options) => {
-    // 1. Config: Prefer Port 587 (STARTTLS) for better cloud compatibility
-    const port = parseInt(process.env.ZOHO_SMTP_PORT) || 587;
-    const isSecure = port === 465; // True for 465, False for 587
+    // 1. Generic SMTP Config using new environment variables
+    const host = process.env.SMTP_HOST;
+    const port = parseInt(process.env.SMTP_PORT) || 587;
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    const from = process.env.FROM_EMAIL;
 
-    console.log(`🔌 Connecting to SMTP: ${process.env.ZOHO_SMTP_HOST}:${port} (Secure: ${isSecure})`);
+    if (!host || !user || !pass || !from) {
+        console.error('❌ Missing SMTP Configuration in Environment Variables');
+        throw new Error('Email service misconfigured');
+    }
 
-    // 2. Create Transporter with robust settings
+    // 2. Create Transporter
     const transporter = nodemailer.createTransport({
-        host: process.env.ZOHO_SMTP_HOST,
+        host: host,
         port: port,
-        secure: isSecure,
+        secure: port === 465, // true for 465, false for other ports
         auth: {
-            user: process.env.ZOHO_SMTP_USER,
-            pass: process.env.ZOHO_SMTP_PASS
+            user: user,
+            pass: pass
         },
         tls: {
-            ciphers: 'SSLv3', // Help with some older SMTP servers
-            rejectUnauthorized: false // Allow self-signed certs if needed
-        },
-        connectionTimeout: 10000, // 10 seconds timeout
-        greetingTimeout: 5000,    // 5 seconds for greeting
-        debug: true,              // Show debug output
-        logger: true              // Log to console
+            rejectUnauthorized: false
+        }
     });
 
-    // 3. Define Email Options
-    const mailOptions = {
-        from: process.env.ZOHO_FROM_EMAIL,
-        to: options.email,
-        subject: options.subject,
-        html: options.message
-    };
-
-    // 4. Send Email with verification
+    // 3. Verify Connection
     try {
         await transporter.verify();
-        console.log('✅ SMTP Connection Verified');
+        console.log(`✅ SMTP Connection Verified (${host}:${port})`);
+    } catch (error) {
+        console.error('❌ SMTP Connection Failed:', error);
+        throw new Error('Email service unavailable');
+    }
 
+    // 4. Send Email
+    const mailOptions = {
+        from: from, // sender address
+        to: options.email, // list of receivers
+        subject: options.subject, // Subject line
+        html: options.message // html body
+    };
+
+    try {
         const info = await transporter.sendMail(mailOptions);
         console.log(`📧 Email sent: ${info.messageId}`);
+        return info;
     } catch (error) {
-        console.error('❌ SMTP Error:', error);
-        throw error; // Re-throw to be handled by controller
+        console.error('❌ Send Mail Error:', error);
+        throw new Error('Failed to send email');
     }
 };
 
