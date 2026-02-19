@@ -4,7 +4,7 @@ const Activity = require('../models/Activity');
 const jwt = require('jsonwebtoken');
 
 const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET || 'secret123', { expiresIn: '30d' });
+    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
 // @desc Auth user & get token
@@ -297,7 +297,9 @@ const deleteUser = async (req, res) => {
         // - Audit trails
         // - Legal compliance
         user.status = 'deleted';
-        user.email = `deleted_${Date.now()}_${user.email}`; // Prevent email conflicts
+        const crypto = require('crypto');
+        const randomSuffix = crypto.randomBytes(4).toString('hex');
+        user.email = `deleted_${randomSuffix}_${user._id}@deleted.com`; // Mask original email and use non-predictable suffix
         await user.save();
 
         console.log('✅ User soft deleted successfully');

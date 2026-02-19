@@ -13,12 +13,37 @@ dotenv.config();
 
 const app = express();
 
-// 1. FIX CORS: Allow requests from your frontend
+// 1. FIX CORS: Restrict to allowed origins
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : [
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'https://t-shirtadmin.web.app',
+        'http://t-shirtadmin.web.app'
+    ];
 app.use(cors({
-    origin: '*', // WARN: For production, replace '*' with your actual Frontend URL
+    origin: function (origin, callback) {
+        // allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Security Check: Ensure JWT secrets are provided in production
+if (process.env.NODE_ENV === 'production') {
+    if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+        console.error('❌ CRITICAL: JWT_SECRET and JWT_REFRESH_SECRET must be set in production!');
+        process.exit(1);
+    }
+}
+
 
 app.use(express.json());
 

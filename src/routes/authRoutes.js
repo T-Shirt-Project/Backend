@@ -14,7 +14,7 @@ router.post('/refresh', async (req, res) => {
     if (!refreshToken) return res.status(401).json({ message: 'No refresh token' });
 
     try {
-        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'refresh_secret');
+        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
         const user = await User.findById(decoded.id);
 
         if (!user || !user.refreshTokens.includes(refreshToken)) {
@@ -23,7 +23,7 @@ router.post('/refresh', async (req, res) => {
 
         // Token Rotation: Remove old, add new
         const newAccessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '15m' });
-        const newRefreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET || 'refresh_secret', { expiresIn: '7d' });
+        const newRefreshToken = jwt.sign({ id: user._id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
 
         user.refreshTokens = user.refreshTokens.filter(t => t !== refreshToken);
         user.refreshTokens.push(newRefreshToken);
@@ -40,16 +40,15 @@ router.post('/refresh', async (req, res) => {
 router.post('/logout', async (req, res) => {
     const { refreshToken } = req.body;
     if (refreshToken) {
-        // We might not know the user if access token is expired, so decode refresh token
         try {
-            const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'refresh_secret');
+            const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
             const user = await User.findById(decoded.id);
             if (user) {
                 user.refreshTokens = user.refreshTokens.filter(t => t !== refreshToken);
                 await user.save();
             }
         } catch (e) {
-            // Ignore error, just logout
+            console.error('Logout error (token revocation failed):', e.message);
         }
     }
     res.json({ message: 'Logged out' });
