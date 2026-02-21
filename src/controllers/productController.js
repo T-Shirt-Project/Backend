@@ -34,6 +34,11 @@ const getProducts = async (req, res) => {
         }
     }
 
+    // Style (Silhouette) Filter logic
+    if (req.query.style && req.query.style !== 'All') {
+        query.type = req.query.style;
+    }
+
     // Role-based visibility
     // ADMIN: Sees all products
     // SELLER: Sees only their products (dashboard view) OR public products (browsing) ?? 

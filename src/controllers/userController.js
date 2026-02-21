@@ -188,6 +188,7 @@ const updateUserProfile = async (req, res) => {
                 phoneNumber: updatedUser.phoneNumber,
                 role: updatedUser.role,
                 token: generateToken(updatedUser._id),
+                addresses: updatedUser.addresses,
                 mobileAccessEnabled: updatedUser.mobileAccessEnabled,
             });
         } else {
