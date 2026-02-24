@@ -25,7 +25,7 @@ router.route('/seller/:id').get(protect, seller, getSellerOrderDetails);
 router.route('/:id').get(protect, getOrderById);
 router.route('/:id/cancel').put(protect, cancelOrder);
 router.route('/:id/pay').put(protect, updateOrderToPaid);
-router.route('/:id/status').put(protect, seller, updateOrderStatus);
+router.route('/:id/status').put(protect, seller, updateOrderStatus).patch(protect, admin, require('../controllers/orderController').updateOrderStatusAdmin);
 router.route('/user/:id').get(protect, admin, require('../controllers/orderController').getOrdersByUser);
 
 module.exports = router;

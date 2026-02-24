@@ -831,11 +831,58 @@ const getSellerOrderDetails = async (req, res) => {
     }
 };
 
+// @desc Admin update order status
+// @route PATCH /api/orders/:id/status
+// @access Private/Admin
+const updateOrderStatusAdmin = async (req, res) => {
+    try {
+        let { status } = req.body;
+        if (status) status = status.trim();
+
+        const validStatuses = ['Placed', 'Processing', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'];
+        if (!status || !validStatuses.includes(status)) {
+            return res.status(400).json({ message: 'Invalid order status: ' + status });
+        }
+
+        const updateData = { status };
+        if (status === 'Delivered') {
+            updateData.isDelivered = true;
+            updateData.deliveredAt = Date.now();
+        }
+
+        const updatedOrder = await Order.findByIdAndUpdate(
+            req.params.id,
+            {
+                $set: updateData
+            },
+            { new: true, runValidators: true }
+        );
+
+        if (!updatedOrder) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        // Update all order items inside to maintain consistency for seller views
+        await Order.updateOne(
+            { _id: updatedOrder._id },
+            { $set: { "orderItems.$[].status": status } }
+        );
+
+        const finalOrder = await Order.findById(updatedOrder._id);
+
+        res.json(finalOrder);
+    } catch (error) {
+        console.error('❌ Update order status admin error:', error);
+        res.status(500).json({ message: error.message || 'Failed to update order status' });
+    }
+};
+
 module.exports = {
     addOrderItems,
     getOrderById,
     updateOrderToPaid,
     updateOrderStatus,
+    updateOrderStatusAdmin,
     getMyOrders,
     getOrders,
     getOrdersByUser,
