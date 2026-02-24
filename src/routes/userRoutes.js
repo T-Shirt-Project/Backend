@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken, updateUserStatus } = require('../controllers/userController');
+const { authUser, registerUser, getUserProfile, updateUserProfile, getUserById, addAddress, getUsers, deleteUser, updateUser, logoutUser, updateFcmToken, updateUserStatus, updateUserRole } = require('../controllers/userController');
 const { protect, admin } = require('../middleware/authMiddleware');
 
 router.post('/', registerUser);
@@ -17,5 +17,6 @@ router.route('/:id')
 
 // Dedicated status update endpoint
 router.patch('/:id/status', protect, admin, updateUserStatus);
+router.patch('/:id/role', protect, admin, updateUserRole);
 
 module.exports = router;

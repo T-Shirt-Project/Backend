@@ -600,9 +600,12 @@ const updateUserStatus = async (req, res) => {
         const oldStatus = user.status;
         const normalizedStatus = status.toLowerCase().trim();
 
-        // Update status
-        user.status = normalizedStatus;
-        const updatedUser = await user.save();
+        const updatedUser = await User.findByIdAndUpdate(
+            req.params.id,
+            { $set: { status: normalizedStatus } },
+            { new: true, runValidators: true }
+        );
+
         console.log('✅ User status updated successfully');
 
         // Log activity
@@ -630,13 +633,7 @@ const updateUserStatus = async (req, res) => {
         res.json({
             success: true,
             message,
-            user: {
-                _id: updatedUser._id,
-                name: updatedUser.name,
-                email: updatedUser.email,
-                role: updatedUser.role,
-                status: updatedUser.status
-            }
+            user: updatedUser
         });
     } catch (error) {
         console.error('❌ UPDATE USER STATUS ERROR:', error);
@@ -645,6 +642,49 @@ const updateUserStatus = async (req, res) => {
             message: 'Failed to update user status',
             error: error.message
         });
+    }
+};
+
+// @desc Update user role (Admin)
+// @route PATCH /api/users/:id/role
+// @access Admin only
+const updateUserRole = async (req, res) => {
+    try {
+        console.log('=== UPDATE USER ROLE REQUEST ===');
+        const { role } = req.body;
+
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ success: false, message: 'Invalid user ID format' });
+        }
+
+        const validRoles = ['admin', 'seller', 'user'];
+        if (!role || !validRoles.includes(role.toLowerCase().trim())) {
+            return res.status(400).json({ success: false, message: 'Invalid role value' });
+        }
+
+        const user = await User.findById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        if (req.user._id.toString() === user._id.toString()) {
+            return res.status(400).json({ success: false, message: 'You cannot change your own role' });
+        }
+
+        const normalizedRole = role.toLowerCase().trim();
+        const updatedUser = await User.findByIdAndUpdate(
+            req.params.id,
+            { $set: { role: normalizedRole } },
+            { new: true, runValidators: true }
+        );
+
+        res.json({
+            success: true,
+            user: updatedUser
+        });
+    } catch (error) {
+        console.error('❌ UPDATE USER ROLE ERROR:', error);
+        res.status(500).json({ success: false, message: 'Failed to update user role' });
     }
 };
 
@@ -660,6 +700,7 @@ module.exports = {
     updateUser,
     logoutUser,
     updateFcmToken,
-    updateUserStatus
+    updateUserStatus,
+    updateUserRole
 };
 
