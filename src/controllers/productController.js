@@ -265,26 +265,56 @@ const updateProduct = async (req, res) => {
                 type: product.type
             };
 
-            product.name = name || product.name;
             const oldPrice = product.price;
-            product.price = price !== undefined ? price : product.price;
-            product.description = description || product.description;
-            product.category = category || product.category;
-            product.type = type || product.type;
-            product.stock = stock !== undefined ? stock : product.stock;
-            product.isVisible = isVisible !== undefined ? isVisible : product.isVisible;
-            if (images) product.images = images;
 
-            const updatedProduct = await product.save();
+            // Prepare update object
+            const updateFields = {
+                name: name || product.name,
+                price: price !== undefined ? price : product.price,
+                description: description || product.description,
+                category: category || product.category,
+                type: type || product.type,
+                stock: stock !== undefined ? stock : product.stock,
+                isVisible: isVisible !== undefined ? isVisible : product.isVisible
+            };
+            if (images) updateFields.images = images;
+
+            let updatedProduct;
+
+            // Handle Discount logic (Set to null/0 removes it)
+            if (discountPrice === null || discountPrice === 0 || discountPrice === "") {
+                updatedProduct = await Product.findByIdAndUpdate(
+                    req.params.id,
+                    { $set: updateFields, $unset: { discountPrice: 1 } },
+                    { new: true, runValidators: true }
+                );
+            } else if (discountPrice !== undefined) {
+                // Validation
+                if (discountPrice < 0 || discountPrice >= updateFields.price) {
+                    return res.status(400).json({ message: 'Invalid discount value. Ensure it is positive and less than the original price.' });
+                }
+                updateFields.discountPrice = discountPrice;
+                updatedProduct = await Product.findByIdAndUpdate(
+                    req.params.id,
+                    { $set: updateFields },
+                    { new: true, runValidators: true }
+                );
+            } else {
+                updatedProduct = await Product.findByIdAndUpdate(
+                    req.params.id,
+                    { $set: updateFields },
+                    { new: true, runValidators: true }
+                );
+            }
 
             // Calculate changed fields for log
             const changes = {};
-            if (oldValues.name !== product.name) changes.name = { old: oldValues.name, new: product.name };
-            if (oldValues.price !== product.price) changes.price = { old: oldValues.price, new: product.price };
-            if (oldValues.stock !== product.stock) changes.stock = { old: oldValues.stock, new: product.stock };
-            if (oldValues.isVisible !== product.isVisible) changes.visibility = { old: oldValues.isVisible, new: product.isVisible };
-            if (oldValues.category !== product.category) changes.gender = { old: oldValues.category, new: product.category };
-            if (oldValues.type !== product.type) changes.style = { old: oldValues.type, new: product.type };
+            if (oldValues.name !== updatedProduct.name) changes.name = { old: oldValues.name, new: updatedProduct.name };
+            if (oldValues.price !== updatedProduct.price) changes.price = { old: oldValues.price, new: updatedProduct.price };
+            if (oldValues.stock !== updatedProduct.stock) changes.stock = { old: oldValues.stock, new: updatedProduct.stock };
+            if (oldValues.isVisible !== updatedProduct.isVisible) changes.visibility = { old: oldValues.isVisible, new: updatedProduct.isVisible };
+            if (oldValues.category !== updatedProduct.category) changes.gender = { old: oldValues.category, new: updatedProduct.category };
+            if (oldValues.type !== updatedProduct.type) changes.style = { old: oldValues.type, new: updatedProduct.type };
 
             // Log Activity
             await Activity.create({
@@ -293,9 +323,9 @@ const updateProduct = async (req, res) => {
                 type: 'product_updated',
                 targetType: 'Product',
                 targetId: updatedProduct._id,
-                description: `Updated product attributes for: ${product.name}`,
+                description: `Updated product attributes for: ${updatedProduct.name}`,
                 details: {
-                    name: product.name,
+                    name: updatedProduct.name,
                     changes: Object.keys(changes).length > 0 ? changes : 'No semantic changes'
                 }
             });
@@ -304,10 +334,10 @@ const updateProduct = async (req, res) => {
             if (price !== undefined && price < oldPrice) {
                 notificationService.sendToAll(
                     'Price Drop Alert! 🔥',
-                    `${product.name} is now available for just ₹${price}!`,
+                    `${updatedProduct.name} is now available for just ₹${price}!`,
                     'OFFER',
-                    { productId: product._id.toString() },
-                    product.images.length > 0 ? product.images[0] : null
+                    { productId: updatedProduct._id.toString() },
+                    updatedProduct.images.length > 0 ? updatedProduct.images[0] : null
                 );
             }
 
