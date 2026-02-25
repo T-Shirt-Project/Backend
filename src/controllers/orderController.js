@@ -204,38 +204,48 @@ const updateOrderStatus = async (req, res) => {
         }
 
         // BUSINESS LOGIC: Status Transition Validation (Strict forward flow)
-        if (order.status === 'Cancelled') {
-            return res.status(400).json({ message: 'Cannot update status of a cancelled order' });
-        }
+        const validateStatusTransition = (currentStatus, newStatus, role) => {
+            if (role === 'admin') return { valid: true }; // Admin override
 
-        const statusRank = {
-            'Placed': 0,
-            'Processing': 1,
-            'Shipped': 2,
-            'Out for Delivery': 3,
-            'Delivered': 4,
-            'Cancelled': 99
+            if (currentStatus === 'Cancelled') {
+                return { valid: false, message: 'Cannot update status of a cancelled order' };
+            }
+
+            const validTransitions = {
+                'Placed': ['Processing'], // Must go to processing first
+                'Processing': ['Shipped'],
+                'Shipped': ['Out for Delivery'],
+                'Out for Delivery': ['Delivered'],
+                'Delivered': []
+            };
+
+            const rank = { 'Placed': 0, 'Processing': 1, 'Shipped': 2, 'Out for Delivery': 3, 'Delivered': 4, 'Cancelled': 99 };
+
+            if (rank[newStatus] < rank[currentStatus] || currentStatus === 'Delivered') {
+                return { valid: false, message: 'Status cannot be reversed. Please contact admin.' };
+            }
+
+            const allowed = validTransitions[currentStatus] || [];
+            if (!allowed.includes(newStatus)) {
+                return { valid: false, message: 'Invalid status transition. Please contact admin.' };
+            }
+
+            return { valid: true };
         };
 
-        const currentRank = statusRank[order.status] || 0;
-        const newRank = statusRank[status];
-
-        // Allow Admin to move backward if needed for corrections, but Seller is strict forward
-        if (user.role !== 'admin' && status !== 'Cancelled' && newRank < currentRank) {
-            // Note: We check Order Level rank, but technically we should check Item Level.
-            // For simplicity and backward stability, if Order is "Shipped", we don't let Seller move their item to "Processing"?
-            // Actually, if Seller A is "Shipped", and they want to correct to "Processing", they might be blocked if Order is "Shipped".
-            // But this matches the previous logic.
-            return res.status(400).json({
-                message: `Invalid status transition: Cannot move from ${order.status} to ${status}`
-            });
+        const validation = validateStatusTransition(order.status, status, user.role);
+        if (!validation.valid) {
+            return res.status(400).json({ success: false, message: validation.message });
         }
 
-        // UPDATE ITEMS
+        // UPDATE ITEMS via preparation
         let updatedCount = 0;
+        const arrayFilters = [];
+        const updateData = {};
+
+        // Prepare orderItems update (if seller has multiple items, update all target items)
         order.orderItems.forEach(item => {
             if (targetItemIds.includes(item._id.toString())) {
-                // Don't update if item is Cancelled (unless Admin forces?)
                 if (item.status !== 'Cancelled') {
                     item.status = status;
                     updatedCount++;
@@ -244,14 +254,14 @@ const updateOrderStatus = async (req, res) => {
         });
 
         if (updatedCount === 0) {
-            return res.status(400).json({ message: 'No eligible active items to update (items might be Cancelled)' });
+            return res.status(400).json({ success: false, message: 'No eligible active items to update (items might be Cancelled)' });
         }
 
         // UPDATE ORDER LEVEL STATUS
-        // We update the root status to reflect the change, primarily for the "Dashboard" view.
-        // If specific items advanced, we advance the Order status.
-        // If the new status is "ahead", we adopt it.
         const oldStatus = order.status;
+        const currentRank = { 'Placed': 0, 'Processing': 1, 'Shipped': 2, 'Out for Delivery': 3, 'Delivered': 4, 'Cancelled': 99 }[oldStatus] || 0;
+        const newRank = { 'Placed': 0, 'Processing': 1, 'Shipped': 2, 'Out for Delivery': 3, 'Delivered': 4, 'Cancelled': 99 }[status];
+
         if (newRank >= currentRank && status !== 'Cancelled') {
             order.status = status;
         }
@@ -265,7 +275,19 @@ const updateOrderStatus = async (req, res) => {
             order.deliveredAt = Date.now();
         }
 
-        const updatedOrder = await order.save();
+        // Use findByIdAndUpdate to comply with requirements, while leveraging modified document state
+        const updatedOrder = await Order.findByIdAndUpdate(
+            orderId,
+            {
+                $set: {
+                    status: order.status,
+                    orderItems: order.orderItems,
+                    isDelivered: order.isDelivered,
+                    deliveredAt: order.deliveredAt
+                }
+            },
+            { new: true, runValidators: true }
+        );
 
         // AUDIT LOG
         try {
