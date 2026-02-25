@@ -22,8 +22,26 @@ const addOrderItems = async (req, res) => {
     if (orderItems && orderItems.length === 0) {
         res.status(400);
         throw new Error('No order items');
-        return;
-    } else {
+    }
+
+    const mongoose = require('mongoose');
+    const Product = require('../models/Product');
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        // Enforce inventory decrement within transaction bounds
+        for (const item of orderItems) {
+            const product = await Product.findById(item.product).session(session);
+            if (!product) {
+                throw new Error(`Product not found: ${item.name}`);
+            }
+            if (product.stock < item.qty) {
+                throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}`);
+            }
+            product.stock -= item.qty;
+            await product.save({ session });
+        }
         // Create immutable snapshot of user data at order time
         // This ensures order history remains intact even if user is deleted
         const userSnapshot = {
@@ -48,12 +66,13 @@ const addOrderItems = async (req, res) => {
             status: 'Placed'
         });
 
-        const createdOrder = await order.save();
+        const createdOrder = await order.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
 
         const productNames = createdOrder.orderItems.map(item => item.name).join(', ');
 
-        // Identify sellers involved in this order to notify them in their audit logs
-        const Product = require('../models/Product');
         const productIds = createdOrder.orderItems.map(item => item.product); // Assuming item.product is the ID
         const products = await Product.find({ _id: { $in: productIds } }).select('seller');
         const sellerIds = [...new Set(products.map(p => p.seller.toString()))];
@@ -88,6 +107,10 @@ const addOrderItems = async (req, res) => {
 
 
         res.status(201).json(createdOrder);
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        res.status(400).json({ message: error.message });
     }
 };
 
@@ -402,6 +425,40 @@ const updateOrderStatus = async (req, res) => {
 // @route GET /api/orders/myorders
 const getMyOrders = async (req, res) => {
     const orders = await Order.find({ user: req.user._id }).sort({ createdAt: -1 });
+    res.json(orders);
+};
+
+// @desc Export orders natively filtering by query
+// @route GET /api/orders/export
+const exportOrders = async (req, res) => {
+    const { status, startDate, endDate, sellerId } = req.query;
+    let query = {};
+
+    // Role-based scoping
+    if (req.user.role === 'seller') {
+        const Product = require('../models/Product');
+        const myProducts = await Product.find({ seller: req.user._id }).select('_id');
+        const productIds = myProducts.map(p => p._id);
+        query["orderItems.product"] = { $in: productIds };
+    } else if (req.user.role === 'admin' && sellerId) {
+        const Product = require('../models/Product');
+        const sellerProducts = await Product.find({ seller: sellerId }).select('_id');
+        const productIds = sellerProducts.map(p => p._id);
+        query["orderItems.product"] = { $in: productIds };
+    }
+
+    if (status && status !== 'all') query.status = status;
+
+    if (startDate || endDate) {
+        query.createdAt = {};
+        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    const orders = await Order.find(query)
+        .populate('user', 'name email')
+        .sort({ createdAt: -1 });
+
     res.json(orders);
 };
 
@@ -911,5 +968,6 @@ module.exports = {
     getStats,
     cancelOrder,
     getSellerOrders,
-    getSellerOrderDetails
+    getSellerOrderDetails,
+    exportOrders
 };

@@ -245,11 +245,20 @@ const getUserById = async (req, res) => {
 const getUsers = async (req, res) => {
     const { status, role } = req.query;
     let query = {};
-    if (status) query.status = status;
-    if (role) query.role = role;
+    if (status && status !== 'all') query.status = status;
+    if (role && role !== 'all') query.role = role;
 
-    const users = await User.find(query).select('-password');
-    res.json(users);
+    const pageSize = Number(req.query.limit) || 50;
+    const page = Number(req.query.page) || 1;
+
+    const count = await User.countDocuments(query);
+    const users = await User.find(query)
+        .select('-password')
+        .limit(pageSize)
+        .skip(pageSize * (page - 1))
+        .sort({ createdAt: -1 });
+
+    res.json({ users, page, pages: Math.ceil(count / pageSize), total: count });
 };
 
 // @desc Delete user (Soft Delete)

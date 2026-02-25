@@ -41,5 +41,16 @@ userSchema.pre('save', async function (next) {
     this.password = await bcrypt.hash(this.password, salt);
 });
 
+userSchema.pre('findOneAndDelete', async function (next) {
+    const userId = this.getQuery()['_id'];
+    if (userId) {
+        const Product = mongoose.model('Product');
+        await Product.deleteMany({ seller: userId });
+        const Comment = mongoose.model('Comment');
+        await Comment.deleteMany({ user: userId });
+    }
+    next();
+});
+
 const User = mongoose.model('User', userSchema);
 module.exports = User;

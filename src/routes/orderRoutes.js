@@ -10,12 +10,14 @@ const {
     getStats,
     cancelOrder,
     getSellerOrders,
-    getSellerOrderDetails
+    getSellerOrderDetails,
+    exportOrders
 } = require('../controllers/orderController');
 const { protect, admin, seller } = require('../middleware/authMiddleware');
 
 router.route('/').post(protect, addOrderItems).get(protect, seller, getOrders);
 router.route('/stats').get(protect, seller, getStats);
+router.route('/export').get(protect, exportOrders);
 router.route('/myorders').get(protect, getMyOrders);
 
 // Seller-specific order routes (must be before /:id to avoid conflicts)

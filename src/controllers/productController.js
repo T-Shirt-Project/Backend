@@ -281,27 +281,32 @@ const updateProduct = async (req, res) => {
 
             let updatedProduct;
 
+            const query = { _id: req.params.id };
+            if (req.user.role !== 'admin') {
+                query.seller = req.user._id;
+            }
+
             // Handle Discount logic (Set to null/0 removes it)
             if (discountPrice === null || discountPrice === 0 || discountPrice === "") {
-                updatedProduct = await Product.findByIdAndUpdate(
-                    req.params.id,
+                updatedProduct = await Product.findOneAndUpdate(
+                    query,
                     { $set: updateFields, $unset: { discountPrice: 1 } },
                     { new: true, runValidators: true }
                 );
             } else if (discountPrice !== undefined) {
                 // Validation
                 if (discountPrice < 0 || discountPrice >= updateFields.price) {
-                    return res.status(400).json({ message: 'Invalid discount value. Ensure it is positive and less than the original price.' });
+                    return res.status(400).json({ message: 'Invalid discount value. Ensure it is positive and strictly less than the original price.' });
                 }
                 updateFields.discountPrice = discountPrice;
-                updatedProduct = await Product.findByIdAndUpdate(
-                    req.params.id,
+                updatedProduct = await Product.findOneAndUpdate(
+                    query,
                     { $set: updateFields },
                     { new: true, runValidators: true }
                 );
             } else {
-                updatedProduct = await Product.findByIdAndUpdate(
-                    req.params.id,
+                updatedProduct = await Product.findOneAndUpdate(
+                    query,
                     { $set: updateFields },
                     { new: true, runValidators: true }
                 );

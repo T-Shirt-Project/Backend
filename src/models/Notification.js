@@ -67,6 +67,7 @@ notificationSchema.index({ userId: 1, type: 1, referenceId: 1, status: 1 }, {
 
 // Index for valid sorting and filtering
 notificationSchema.index({ userId: 1, deleted: 1, createdAt: -1 });
+notificationSchema.index({ userId: 1, read: 1 });
 
 module.exports = mongoose.model('Notification', notificationSchema);
 
